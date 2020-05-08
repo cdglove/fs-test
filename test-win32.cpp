@@ -48,6 +48,7 @@ int main() {
 
   std::wstring current_path;
   current_path.assign(root_file.name.begin(), root_file.name.end());
+  current_path.push_back('*');
 
   WIN32_FIND_DATAW wfd;
   HANDLE find_handle = FindFirstFileW(current_path.c_str(), &wfd);
@@ -104,6 +105,11 @@ int main() {
       current_path += L"\\*";
       current = n.id;
       directory_stack.pop_back();
+      if(find_handle != INVALID_HANDLE_VALUE) {
+        if(FindClose(find_handle) == FALSE) {
+          abort();
+        }
+      }
       find_handle = FindFirstFileW(current_path.c_str(), &wfd);
       if(find_handle != INVALID_HANDLE_VALUE) {
         break;
