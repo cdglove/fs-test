@@ -40,7 +40,7 @@ int main() {
 
   using namespace boost::filesystem;
   recursive_directory_iterator i(
-      "C:\\", directory_options::skip_permission_denied);
+      root_file.name, directory_options::skip_permission_denied);
   for(; i != recursive_directory_iterator(); ++i) {
     try {
       boost::system::error_code ec;
@@ -89,6 +89,7 @@ int main() {
     }
   }
 
-  std::cout << "test-boost_filesystem found " << files.size() << " files." << std::endl;
+  std::cout << "test-boost_filesystem found " << files.size() << " files."
+            << std::endl;
   return 0;
 }

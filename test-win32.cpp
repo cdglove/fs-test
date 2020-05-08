@@ -17,8 +17,8 @@
 
 #include <boost/nowide/convert.hpp>
 #include <boost/timer/timer.hpp>
-#include <vector>
 #include <iostream>
+#include <vector>
 
 int main() {
   boost::timer::auto_cpu_timer t;
@@ -46,7 +46,9 @@ int main() {
   root_file.name = "C:\\";
   files.push_back(root_file);
 
-  std::wstring current_path(L"C:\\*");
+  std::wstring current_path;
+  current_path.assign(root_file.name.begin(), root_file.name.end());
+
   WIN32_FIND_DATAW wfd;
   HANDLE find_handle = FindFirstFileW(current_path.c_str(), &wfd);
   DWORD err = 0;

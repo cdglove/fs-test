@@ -15,6 +15,7 @@
 #include <boost/nowide/convert.hpp>
 #include <boost/timer/timer.hpp>
 #include <chrono>
+#include <filesystem>
 #include <iostream>
 #include <vector>
 
@@ -46,7 +47,8 @@ int main() {
   root_file.name = "C:\\";
   files.push_back(root_file);
 
-  std::wstring current_path = L"C:\\";
+  std::wstring current_path;
+  current_path.assign(root_file.name.begin(), root_file.name.end());
 
   std::vector<llfio::directory_entry> entry_buffer;
   // Good enough for the test.
