@@ -33,11 +33,11 @@ int main() {
 
   File root_file;
   root_file.parent = 0;
-  root_file.name = "C:\\";
+  root_file.name = ".";
   files.push_back(root_file);
   std::vector<std::size_t> directory_stack;
   directory_stack.push_back(0);
-
+  std::size_t total_size = 0;
   using namespace boost::filesystem;
   recursive_directory_iterator i(
       root_file.name, directory_options::skip_permission_denied);
@@ -53,34 +53,35 @@ int main() {
       directory_stack.resize(depth + 1);
       if(is_directory(stat)) {
         auto parent = directory_stack.back();
-        auto lwt = last_write_time(i->path(), ec);
-        if(ec) {
-          continue;
-        }
+        // auto lwt = last_write_time(i->path(), ec);
+        // if(ec) {
+        //   continue;
+        // }
         File file;
         file.directory = true;
         file.name = i->path().filename().string();
         file.parent = parent;
-        file.modified = lwt;
+        //file.modified = lwt;
         directory_stack.push_back(files.size());
         files.push_back(file);
       }
       else if(is_regular_file(stat)) {
         auto parent = directory_stack.back();
-        auto lwt = last_write_time(i->path(), ec);
-        if(ec) {
-          continue;
-        }
-        auto size = file_size(i->path(), ec);
-        if(ec) {
-          continue;
-        }
+        // auto lwt = last_write_time(i->path(), ec);
+        // if(ec) {
+        //   continue;
+        // }
+        // auto size = file_size(i->path(), ec);
+        // if(ec) {
+        //   continue;
+        // }
         File file;
         file.directory = false;
         file.name = i->path().filename().string();
         file.parent = parent;
-        file.size = size;
-        file.modified = lwt;
+        //file.size = size;
+        //total_size += file.size;
+        //file.modified = lwt;
         directory_stack.push_back(files.size());
         files.push_back(file);
       }
@@ -89,7 +90,7 @@ int main() {
     }
   }
 
-  std::cout << "test-boost_filesystem found " << files.size() << " files."
-            << std::endl;
+  std::cout << "test-boost_filesystem found " << files.size()
+            << " files totalling " << total_size / 1024 << " KiB." << std::endl;
   return 0;
 }

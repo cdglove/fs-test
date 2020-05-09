@@ -15,11 +15,28 @@
 #include <boost/nowide/convert.hpp>
 #include <boost/timer/timer.hpp>
 #include <chrono>
-#include <filesystem>
+#include <experimental/filesystem>
 #include <iostream>
 #include <vector>
 
 namespace llfio = LLFIO_V2_NAMESPACE;
+
+std::string convert_string(
+    llfio::path_view::byte const* s, std::size_t length) {
+#ifdef _WIN32
+  return boost::nowide::narrow(reinterpret_cast<wchar_t const*>(s), length);
+#else
+  return std::string(
+      reinterpret_cast<char const*>(s),
+      reinterpret_cast<char const*>(s) + length);
+#endif
+}
+
+#ifdef _WIN32
+using native_string = std::wstring;
+#else
+using native_string = std::string;
+#endif
 
 int main() {
   boost::timer::auto_cpu_timer t;
@@ -38,53 +55,59 @@ int main() {
   struct DirectoryNode {
     std::size_t id;
     std::size_t path_index;
-    std::wstring name;
+    native_string name;
   };
   std::vector<DirectoryNode> directory_stack;
 
   File root_file;
   root_file.parent = 0;
-  root_file.name = "C:\\";
+  root_file.name = ".";
+  root_file.name.push_back(llfio::path_view::preferred_separator);
   files.push_back(root_file);
 
-  std::wstring current_path;
+  native_string current_path;
   current_path.assign(root_file.name.begin(), root_file.name.end());
 
   std::vector<llfio::directory_entry> entry_buffer;
   // Good enough for the test.
   entry_buffer.resize(64 * 1024);
   std::size_t current = 0;
+  std::size_t total_size = 0;
   while(true) {
     llfio::result<llfio::directory_handle> result =
         llfio::directory({}, current_path);
     if(result.has_value()) {
       llfio::directory_handle d = std::move(result).value();
-      llfio::directory_handle::buffers_type listing =
-          d.read({entry_buffer}).value();
-      for(llfio::directory_entry& e : listing) {
-        if(e.stat.st_type == std::filesystem::file_type::directory) {
-          auto id = files.size();
-          File f;
-          f.parent = current;
-          f.name = boost::nowide::narrow(
-              (wchar_t*)e.leafname._raw_data(), e.leafname.native_size());
-          f.directory = true;
-          f.modified = std::chrono::system_clock::to_time_t(e.stat.st_mtim);
-          files.push_back(f);
-          directory_stack.push_back(
-              {id,
-               current_path.size(),
-               {(wchar_t*)e.leafname._raw_data(), e.leafname.native_size()}});
-        }
-        else {
-          File f;
-          f.parent = current;
-          f.name = boost::nowide::narrow(
-              (wchar_t*)e.leafname._raw_data(), e.leafname.native_size());
-          f.size = e.stat.st_size;
-          f.modified = std::chrono::system_clock::to_time_t(e.stat.st_mtim);
-          f.directory = false;
-          files.push_back(f);
+      llfio::result<llfio::directory_handle::buffers_type> listing =
+          d.read({entry_buffer});
+      if(listing.has_value()) {
+        for(llfio::directory_entry& e : listing.value()) {
+          if(e.stat.st_type == std::experimental::filesystem::file_type::directory) {
+            auto id = files.size();
+            File f;
+            f.parent = current;
+            f.name = convert_string(
+                e.leafname._raw_data(), e.leafname.native_size());
+            f.directory = true;
+            f.modified = std::chrono::system_clock::to_time_t(e.stat.st_mtim);
+            files.push_back(f);
+            directory_stack.push_back(
+                {id, current_path.size(),
+                 native_string(
+                     (native_string::value_type const*)e.leafname._raw_data(),
+                     e.leafname.native_size())});
+          }
+          else {
+            File f;
+            f.parent = current;
+            f.name = convert_string(
+                e.leafname._raw_data(), e.leafname.native_size());
+            f.size = e.stat.st_size;
+            total_size += f.size;
+            f.modified = std::chrono::system_clock::to_time_t(e.stat.st_mtim);
+            f.directory = false;
+            files.push_back(f);
+          }
         }
       }
     }
@@ -96,11 +119,12 @@ int main() {
     DirectoryNode& n = directory_stack.back();
     current_path.resize(n.path_index);
     current_path += n.name;
-    current_path += L"\\";
+    current_path.push_back(llfio::path_view::preferred_separator);
     current = n.id;
     directory_stack.pop_back();
   }
 
-  std::cout << "test-llfio found " << files.size() << " files." << std::endl;
+  std::cout << "test-llfio found " << files.size() << " files totalling "
+            << total_size / 1024 << " KiB." << std::endl;
   return 0;
 }

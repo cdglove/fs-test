@@ -43,7 +43,7 @@ int main() {
 
   File root_file;
   root_file.parent = 0;
-  root_file.name = "C:\\";
+  root_file.name = ".\\";
   files.push_back(root_file);
 
   std::wstring current_path;
@@ -59,6 +59,7 @@ int main() {
   }
 
   std::size_t current = 0;
+  std::size_t total_size = 0;
   while(true) {
     if((wcsncmp(L".", wfd.cFileName, 1) != 0) &&
        (wcsncmp(L"..", wfd.cFileName, 2) != 0)) {
@@ -80,6 +81,7 @@ int main() {
         f.name = boost::nowide::narrow(wfd.cFileName);
         f.size = (static_cast<std::uint64_t>(wfd.nFileSizeHigh) << 32) |
                  wfd.nFileSizeLow;
+        total_size += f.size;
         f.modified = wfd.ftLastWriteTime;
         f.directory = false;
         files.push_back(f);
@@ -131,6 +133,7 @@ int main() {
     }
   }
 
-  std::cout << "test-win32 found " << files.size() << " files." << std::endl;
+  std::cout << "test-win32 found " << files.size() << " files totalling "
+            << total_size / 1024 << " KiB." << std::endl;
   return 0;
 }
