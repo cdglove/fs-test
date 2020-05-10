@@ -74,15 +74,22 @@ int main() {
   std::size_t current = 0;
   std::size_t total_size = 0;
   while(true) {
+    std::cerr << total_size << std::endl;
     llfio::result<llfio::directory_handle> result =
         llfio::directory({}, current_path);
     if(result.has_value()) {
       llfio::directory_handle d = std::move(result).value();
+      if(d.is_symlink()) {
+        continue;
+      }
       llfio::result<llfio::directory_handle::buffers_type> listing =
           d.read({entry_buffer});
       if(listing.has_value()) {
-        for(llfio::directory_entry& e : listing.value()) {
+        for(llfio::directory_entry& e : std::move(listing).value()) {
           if(e.stat.st_type == std::experimental::filesystem::file_type::directory) {
+            if(!e.stat.fill(d, llfio::stat_t::want::mtim)) {
+              continue;
+            }
             auto id = files.size();
             File f;
             f.parent = current;
@@ -97,7 +104,10 @@ int main() {
                      (native_string::value_type const*)e.leafname._raw_data(),
                      e.leafname.native_size())});
           }
-          else {
+          else if(e.stat.st_type == std::experimental::filesystem::file_type::regular) {
+            if(!e.stat.fill(d, llfio::stat_t::want::mtim | llfio::stat_t::want::size)) {
+              continue;
+            }
             File f;
             f.parent = current;
             f.name = convert_string(

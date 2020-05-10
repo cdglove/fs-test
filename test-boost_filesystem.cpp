@@ -53,35 +53,35 @@ int main() {
       directory_stack.resize(depth + 1);
       if(is_directory(stat)) {
         auto parent = directory_stack.back();
-        // auto lwt = last_write_time(i->path(), ec);
-        // if(ec) {
-        //   continue;
-        // }
+        auto lwt = last_write_time(i->path(), ec);
+        if(ec) {
+          continue;
+        }
         File file;
         file.directory = true;
         file.name = i->path().filename().string();
         file.parent = parent;
-        //file.modified = lwt;
+        file.modified = lwt;
         directory_stack.push_back(files.size());
         files.push_back(file);
       }
       else if(is_regular_file(stat)) {
         auto parent = directory_stack.back();
-        // auto lwt = last_write_time(i->path(), ec);
-        // if(ec) {
-        //   continue;
-        // }
-        // auto size = file_size(i->path(), ec);
-        // if(ec) {
-        //   continue;
-        // }
+        auto lwt = last_write_time(i->path(), ec);
+        if(ec) {
+          continue;
+        }
+        auto size = file_size(i->path(), ec);
+        if(ec) {
+          continue;
+        }
         File file;
         file.directory = false;
         file.name = i->path().filename().string();
         file.parent = parent;
-        //file.size = size;
-        //total_size += file.size;
-        //file.modified = lwt;
+        file.size = size;
+        total_size += file.size;
+        file.modified = lwt;
         directory_stack.push_back(files.size());
         files.push_back(file);
       }
