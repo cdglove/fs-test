@@ -73,8 +73,12 @@ int main() {
   entry_buffer.resize(64 * 1024);
   std::size_t current = 0;
   std::size_t total_size = 0;
+  std::size_t last_trace_size = 0;
   while(true) {
-    std::cerr << total_size << std::endl;
+    if(total_size - last_trace_size > (1024 * 1024 * 1024)) {
+      std::cerr << total_size << std::endl;
+      last_trace_size = total_size;
+    }
     llfio::result<llfio::directory_handle> result =
         llfio::directory({}, current_path);
     if(result.has_value()) {
@@ -86,10 +90,8 @@ int main() {
           d.read({entry_buffer});
       if(listing.has_value()) {
         for(llfio::directory_entry& e : std::move(listing).value()) {
-          if(e.stat.st_type == std::experimental::filesystem::file_type::directory) {
-            if(!e.stat.fill(d, llfio::stat_t::want::mtim)) {
-              continue;
-            }
+          if(e.stat.st_type ==
+             std::experimental::filesystem::file_type::directory) {
             auto id = files.size();
             File f;
             f.parent = current;
@@ -104,8 +106,11 @@ int main() {
                      (native_string::value_type const*)e.leafname._raw_data(),
                      e.leafname.native_size())});
           }
-          else if(e.stat.st_type == std::experimental::filesystem::file_type::regular) {
-            if(!e.stat.fill(d, llfio::stat_t::want::mtim | llfio::stat_t::want::size)) {
+          else if(
+              e.stat.st_type ==
+              std::experimental::filesystem::file_type::regular) {
+            if(!e.stat.fill(
+                   d, llfio::stat_t::want::mtim | llfio::stat_t::want::size)) {
               continue;
             }
             File f;
