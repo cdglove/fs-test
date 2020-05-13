@@ -15,7 +15,7 @@
 #include <boost/nowide/convert.hpp>
 #include <boost/timer/timer.hpp>
 #include <chrono>
-#include <experimental/filesystem>
+#include <filesystem>
 #include <iostream>
 #include <vector>
 
@@ -69,16 +69,13 @@ int main() {
   current_path.assign(root_file.name.begin(), root_file.name.end());
 
   std::vector<llfio::directory_entry> entry_buffer;
+  llfio::directory_handle::buffers_type handle_buffer;
   // Good enough for the test.
   entry_buffer.resize(64 * 1024);
   std::size_t current = 0;
   std::size_t total_size = 0;
   std::size_t last_trace_size = 0;
   while(true) {
-    if(total_size - last_trace_size > (1024 * 1024 * 1024)) {
-      std::cerr << total_size << std::endl;
-      last_trace_size = total_size;
-    }
     llfio::result<llfio::directory_handle> result =
         llfio::directory({}, current_path);
     if(result.has_value()) {
@@ -86,13 +83,32 @@ int main() {
       if(d.is_symlink()) {
         continue;
       }
+
+      handle_buffer = entry_buffer;
       llfio::result<llfio::directory_handle::buffers_type> listing =
-          d.read({entry_buffer});
+          d.read(std::move(handle_buffer));
       if(listing.has_value()) {
-        for(llfio::directory_entry& e : std::move(listing).value()) {
-          if(e.stat.st_type ==
-             std::experimental::filesystem::file_type::directory) {
+        handle_buffer = std::move(listing).value();
+        if(!handle_buffer.done()) {
+          entry_buffer.resize(entry_buffer.size() + entry_buffer.size() / 2);
+          continue;
+        }
+
+        for(llfio::directory_entry& e : handle_buffer) {
+          if(visit(e.leafname, [](auto sv) { return sv[0] == '.'; })) {
+            continue;
+          }
+          if(e.stat.st_type == std::filesystem::file_type::directory) {
             auto id = files.size();
+            // directory_handle::read() only fills .metadata(), so to be
+            // portable fetch any missing
+            if(!(handle_buffer.metadata() & llfio::stat_t::want::mtim)) {
+              // Fetch missing metadata
+              auto h = llfio::file_handle::file(
+                           d, e.leafname, llfio::file_handle::mode::attr_read)
+                           .value();
+              e.stat.fill(h, llfio::stat_t::want::mtim).value();
+            }
             File f;
             f.parent = current;
             f.name = convert_string(
@@ -106,12 +122,19 @@ int main() {
                      (native_string::value_type const*)e.leafname._raw_data(),
                      e.leafname.native_size())});
           }
-          else if(
-              e.stat.st_type ==
-              std::experimental::filesystem::file_type::regular) {
-            if(!e.stat.fill(
-                   d, llfio::stat_t::want::mtim | llfio::stat_t::want::size)) {
-              continue;
+          else if(e.stat.st_type == std::filesystem::file_type::regular) {
+            // directory_handle::read() only fills .metadata(), so to be
+            // portable fetch any missing
+            if(!(handle_buffer.metadata() &
+                 (llfio::stat_t::want::mtim | llfio::stat_t::want::size))) {
+              // Fetch missing metadata
+              auto h = llfio::directory_handle::directory(
+                           d, e.leafname, llfio::file_handle::mode::attr_read)
+                           .value();
+              e.stat
+                  .fill(
+                      h, llfio::stat_t::want::mtim | llfio::stat_t::want::size)
+                  .value();
             }
             File f;
             f.parent = current;

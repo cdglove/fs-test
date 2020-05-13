@@ -21,7 +21,7 @@ include(FetchContent)
 FetchContent_Declare(
     llfio
     GIT_REPOSITORY https://github.com/ned14/llfio.git
-    GIT_TAG        e335c6c
+    GIT_TAG        master
 )
 FetchContent_GetProperties(llfio)
 if(NOT llfio_POPULATED)
