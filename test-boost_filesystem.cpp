@@ -44,10 +44,6 @@ int main() {
       root_file.name, directory_options::skip_permission_denied |
                           directory_options::pop_on_error);
   for(; i != recursive_directory_iterator(); ++i) {
-    if(total_size - last_trace_size > (1024 * 1024 * 1024)) {
-      std::cerr << total_size << std::endl;
-      last_trace_size = total_size;
-    }
     try {
       boost::system::error_code ec;
       auto stat = i->status(ec);

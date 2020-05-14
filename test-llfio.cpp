@@ -15,11 +15,11 @@
 #include <boost/nowide/convert.hpp>
 #include <boost/timer/timer.hpp>
 #include <chrono>
-#include <filesystem>
 #include <iostream>
 #include <vector>
 
 namespace llfio = LLFIO_V2_NAMESPACE;
+namespace fs = llfio::filesystem;
 
 std::string convert_string(
     llfio::path_view::byte const* s, std::size_t length) {
@@ -95,10 +95,12 @@ int main() {
         }
 
         for(llfio::directory_entry& e : handle_buffer) {
-          if(visit(e.leafname, [](auto sv) { return sv[0] == '.'; })) {
+          if(visit(e.leafname, [](auto sv) {
+               return sv[0] == '.' && sv.length() <= 2;
+             })) {
             continue;
           }
-          if(e.stat.st_type == std::filesystem::file_type::directory) {
+          if(e.stat.st_type == fs::file_type::directory) {
             auto id = files.size();
             // directory_handle::read() only fills .metadata(), so to be
             // portable fetch any missing
@@ -122,13 +124,13 @@ int main() {
                      (native_string::value_type const*)e.leafname._raw_data(),
                      e.leafname.native_size())});
           }
-          else if(e.stat.st_type == std::filesystem::file_type::regular) {
+          else if(e.stat.st_type == fs::file_type::regular) {
             // directory_handle::read() only fills .metadata(), so to be
             // portable fetch any missing
             if(!(handle_buffer.metadata() &
                  (llfio::stat_t::want::mtim | llfio::stat_t::want::size))) {
               // Fetch missing metadata
-              auto h = llfio::directory_handle::directory(
+              auto h = llfio::file_handle::file(
                            d, e.leafname, llfio::file_handle::mode::attr_read)
                            .value();
               e.stat
