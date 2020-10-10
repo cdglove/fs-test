@@ -43,7 +43,7 @@ int main() {
 
   File root_file;
   root_file.parent = 0;
-  root_file.name = ".\\";
+  root_file.name = "\\\\?\\C:\\";
   files.push_back(root_file);
 
   std::wstring current_path;
@@ -51,13 +51,17 @@ int main() {
   current_path.push_back('*');
 
   WIN32_FIND_DATAW wfd;
-  HANDLE find_handle = FindFirstFileW(current_path.c_str(), &wfd);
-  DWORD err = 0;
+  HANDLE find_handle = FindFirstFileExW(
+      current_path.c_str(), FindExInfoBasic, &wfd, FindExSearchNameMatch,
+      nullptr,
+      FIND_FIRST_EX_CASE_SENSITIVE | FIND_FIRST_EX_LARGE_FETCH |
+          FIND_FIRST_EX_ON_DISK_ENTRIES_ONLY);
 
   if(find_handle == INVALID_HANDLE_VALUE) {
     abort();
   }
 
+  DWORD err = 0;
   std::size_t current = 0;
   std::size_t total_size = 0;
   while(true) {
@@ -112,7 +116,11 @@ int main() {
           abort();
         }
       }
-      find_handle = FindFirstFileW(current_path.c_str(), &wfd);
+      find_handle = FindFirstFileExW(
+          current_path.c_str(), FindExInfoBasic, &wfd, FindExSearchNameMatch,
+          nullptr,
+          FIND_FIRST_EX_CASE_SENSITIVE | FIND_FIRST_EX_LARGE_FETCH |
+              FIND_FIRST_EX_ON_DISK_ENTRIES_ONLY);
       if(find_handle != INVALID_HANDLE_VALUE) {
         break;
       }

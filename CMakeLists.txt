@@ -15,27 +15,33 @@ cmake_minimum_required(VERSION 3.14)
 project(fs-test CXX)
 set(CMAKE_CXX_STANDARD 17)
 
-find_package(Boost REQUIRED timer filesystem)
+find_package(Boost REQUIRED timer filesystem thread)
 
 include(FetchContent)
-FetchContent_Declare(
-    llfio
-    GIT_REPOSITORY https://github.com/ned14/llfio.git
-    GIT_TAG        master
-)
-FetchContent_GetProperties(llfio)
-if(NOT llfio_POPULATED)
-    FetchContent_Populate(llfio)
-    add_subdirectory(${llfio_SOURCE_DIR} ${llfio_BINARY_DIR} EXCLUDE_FROM_ALL)
-endif()
+# FetchContent_Declare(
+#     llfio
+#     GIT_REPOSITORY https://github.com/ned14/llfio.git
+#     GIT_TAG        master
+# )
+# FetchContent_GetProperties(llfio)
+# if(NOT llfio_POPULATED)
+#     FetchContent_Populate(llfio)
+#     add_subdirectory(${llfio_SOURCE_DIR} ${llfio_BINARY_DIR} EXCLUDE_FROM_ALL)
+# endif()
 
-add_executable(test-llfio test-llfio.cpp)
-target_link_libraries(test-llfio PUBLIC llfio_sl Boost::timer)
+# add_executable(test-llfio test-llfio.cpp)
+# target_link_libraries(test-llfio PUBLIC llfio_sl Boost::timer)
 add_executable(test-boost_filesystem test-boost_filesystem.cpp)
 target_link_libraries(test-boost_filesystem PUBLIC Boost::timer Boost::filesystem)
 if(WIN32)
     add_executable(test-win32 test-win32.cpp)
     target_link_libraries(test-win32 PUBLIC Boost::timer)
+    add_executable(test-win32-threaded test-win32-threaded.cpp)
+    target_link_libraries(test-win32-threaded PUBLIC Boost::timer Boost::thread)
+    add_executable(test-usn test-usn.cpp)
+    target_link_libraries(test-usn PUBLIC Boost::timer)
+    add_executable(test-usn-threaded test-usn-threaded.cpp)
+    target_link_libraries(test-usn-threaded PUBLIC Boost::timer Boost::thread)
 endif()
 
 if(UNIX)

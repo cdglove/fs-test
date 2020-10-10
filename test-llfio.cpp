@@ -61,7 +61,7 @@ int main() {
 
   File root_file;
   root_file.parent = 0;
-  root_file.name = ".";
+  root_file.name = "C:/";
   root_file.name.push_back(llfio::path_view::preferred_separator);
   files.push_back(root_file);
 
