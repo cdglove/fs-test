@@ -7,12 +7,11 @@
 #include <boost/thread/executors/basic_thread_pool.hpp>
 #include <boost/thread/sync_queue.hpp>
 #include <boost/timer/timer.hpp>
-#include <boost/scope_exit.hpp>
 #include <iostream>
-#include <numeric>
 #include <stdio.h>
 #include <string>
 #include <vector>
+#include <numeric>
 
 void show_record(USN_RECORD* record) {
   void* buffer;
@@ -100,27 +99,29 @@ void check_record(USN_RECORD* record) {
 
 class UsnDirectoryCollector {
  public:
-  UsnDirectoryCollector(std::wstring volume)
-      : volume_(std::move(volume)) {
+  UsnDirectoryCollector(std::wstring volume) {
+    drive_ = CreateFile(
+        volume.c_str(), GENERIC_READ,
+        FILE_SHARE_DELETE | FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+        OPEN_ALWAYS, FILE_FLAG_NO_BUFFERING, NULL);
+  }
+
+  UsnDirectoryCollector() {
+    if(drive_) {
+      CloseHandle(drive_);
+    }
   }
 
   int read_all() {
-    HANDLE drive = CreateFile(
-        volume_.c_str(), GENERIC_READ,
-        FILE_SHARE_DELETE | FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
-        OPEN_ALWAYS, 0, NULL);
     DWORD bytes_read = 0;
     std::vector<char> buffer;
     buffer.resize(1024 * 1024);
     if(!DeviceIoControl(
-           drive, FSCTL_QUERY_USN_JOURNAL, NULL, 0, buffer.data(),
+           drive_, FSCTL_QUERY_USN_JOURNAL, NULL, 0, buffer.data(),
            buffer.size(), &bytes_read, NULL)) {
       printf("FSCTL_QUERY_USN_JOURNAL: %u\n", GetLastError());
-      CloseHandle(drive);
       return -1;
     }
-
-    CloseHandle(drive);
 
     USN_JOURNAL_DATA* journal =
         reinterpret_cast<USN_JOURNAL_DATA*>(buffer.data());
@@ -148,19 +149,10 @@ class UsnDirectoryCollector {
     boost::barrier wait(boost::thread::hardware_concurrency() + 1);
     std::vector<int> file_counts(boost::thread::hardware_concurrency(), 0);
     for(std::size_t i = 0; i < boost::thread::hardware_concurrency(); ++i) {
-      pool.submit([&file_count = file_counts[i], &wait, volume = this->volume_,
+      pool.submit([&file_count = file_counts[i], &wait, drive = this->drive_,
                    &usn_queue = this->usn_queue_, &outstanding, &done,
                    mft_enum_data]() mutable {
         try {
-          HANDLE drive = CreateFile(
-              volume.c_str(), GENERIC_READ,
-              FILE_SHARE_DELETE | FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
-              OPEN_ALWAYS, 0, NULL);
-          BOOST_SCOPE_EXIT(&drive) {
-            CloseHandle(drive);
-          }
-          BOOST_SCOPE_EXIT_END
-         
           std::vector<char> buffer;
           buffer.resize(4 * 1024 * 1024);
           DWORD bytes_read = 0;
@@ -182,7 +174,7 @@ class UsnDirectoryCollector {
                 printf("FSCTL_ENUM_USN_DATA: %u\n", GetLastError());
                 printf("Final ID: %lu\n", current_id);
                 if(--outstanding == 0) {
-                  done.notify_all();
+                    done.notify_all();
                 }
 
                 continue;
@@ -230,8 +222,8 @@ class UsnDirectoryCollector {
   }
 
  private:
+  HANDLE drive_;
   boost::concurrent::sync_queue<USN> usn_queue_;
-  std::wstring volume_;
 };
 
 int main(int argc, char** argv) {
