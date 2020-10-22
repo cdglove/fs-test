@@ -1,16 +1,21 @@
 /*
 
 */
+#include "MftParser.hpp"
+#include <algorithm>
 #include <assert.h>
+#include <boost/timer/timer.hpp>
+#include <ctime>
+#include <iostream>
+#include <iterator>
+#include <numeric>
 #include <stdint.h>
 #include <stdio.h>
 #include <vector>
 #include <windows.h>
-#include <iostream>
-#include <boost/timer/timer.hpp>
-#include <ctime>
 
- std::size_t total_size = 0;
+#include <boost/winapi/handles.hpp>
+#include <string>
 
 /* BOOT_BLOCK
 
@@ -213,26 +218,6 @@ typedef struct {
 
 typedef struct {
   LPCWSTR FileName;
-  DWORD FileNameLength;
-  ULARGE_INTEGER ParentId;
-  // ULARGE_INTEGER mftnumber; //Inode
-  DWORD Inode;
-  WORD flags;
-  // HTREEITEM hItem;
-  FILETIME ctime;
-  FILETIME atime;
-  FILETIME mtime;
-  FILETIME rtime;
-
-  ULONGLONG filesize;
-  ULONGLONG allocfilesize;
-  DWORD attributes;
-  DWORD objAttrib;
-
-} FILEINFORMATION, *PFILEINFORMATION;
-
-typedef struct {
-  LPCWSTR FileName;
   USHORT FileNameLength;
   USHORT Flags;
   ULARGE_INTEGER ParentId;
@@ -272,10 +257,10 @@ struct File {
   FILETIME accessed;
   FILETIME modified;
   FILETIME updated;
-  uint64_t size;
-  std::string name;
+  uint64_t size = 0;
+  std::wstring name;
   bool directory;
-  bool in_use;
+  bool in_use = false;
 };
 
 typedef struct {
@@ -381,7 +366,7 @@ PDISKHANDLE OpenDisk(wchar_t const* disk) {
   memset(tmpDisk, 0, sizeof(DISKHANDLE));
   tmpDisk->fileHandle = CreateFileW(
       disk, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
-      OPEN_EXISTING, 0, NULL);
+      OPEN_EXISTING, FILE_FLAG_NO_BUFFERING, NULL);
   if(tmpDisk->fileHandle != INVALID_HANDLE_VALUE) {
     ReadFile(
         tmpDisk->fileHandle, &tmpDisk->NTFS.bootSector, sizeof(BOOT_BLOCK),
@@ -651,10 +636,9 @@ DWORD inline FetchSearchInfo(
           if(file->Flags & 0x0001) {
             File& f = disk->Files[file->RecordNumber];
             f.in_use = true;
-            //f.name = {fn->Name, fn->NameLength};
+            f.name = {fn->Name, fn->NameLength};
             f.parent = fn->DirectoryFileReferenceNumber & 0x0000ffffffffffff;
             f.size = fn->DataSize;
-            total_size += f.size;
             f.modified = fn->LastWriteTime;
             f.directory = file->Flags & 0x0002;
           }
@@ -671,9 +655,6 @@ DWORD inline FetchSearchInfo(
           PNONRESIDENT_ATTRIBUTE nattr = PNONRESIDENT_ATTRIBUTE(attr);
           File& f = disk->Files[file->RecordNumber];
           f.size = nattr->DataSize;
-          if(f.in_use) {
-            total_size += f.size;
-          }
           real_file = 1;
         }
       } break;
@@ -836,20 +817,65 @@ static std::time_t to_time_t(const FILETIME& ft) {
   return static_cast<std::time_t>(t);
 }
 
+
+
 int main() {
   boost::timer::auto_cpu_timer t;
-  auto disk = OpenDisk(L"\\\\?\\c:");
-  if(!LoadMFT(disk, FALSE)) {
-    return 1;
-  }
+  //auto disk = OpenDisk(L"\\\\?\\c:");
+  fsdb::MftParser parser;
+  parser.open(L"\\\\?\\c:");
+  parser.read();
+  parser.close();
+  // if(!LoadMFT(disk, FALSE)) {
+  //   return 1;
+  // }
 
-  STATUSINFO status;
-  disk->Files.resize(disk->NTFS.entryCount + 16);
-  if(!ParseMFT(disk, SEARCHINFO, &status)) {
-    return 1;
-  }
+  // STATUSINFO status;
+  // disk->Files.resize(disk->NTFS.entryCount + 16);
+  // if(!ParseMFT(disk, SEARCHINFO, &status)) {
+  //   return 1;
+  // }
 
-  std::cout << "test-mft found " << disk->Files.size() << " files totalling "
-          << total_size / 1024 << " KiB." << std::endl;
+  // auto total_count = std::count_if(
+  //     disk->Files.begin(), disk->Files.end(),
+  //     [](auto&& f) { return f.in_use; });
+
+  // auto total_size = std::accumulate(
+  //     disk->Files.begin(), disk->Files.end(), std::size_t(0),
+  //     [](std::size_t v, auto&& f) {
+  //       if(f.name == L"$BadClus") {
+  //         return v;
+  //       }
+
+  //       if(!f.in_use) {
+  //         return v;
+  //       }
+
+  //       return v + f.size;
+  //     });
+
+  // std::cout << "test-mft found " << total_count << " files totalling "
+  //           << total_size / 1024 << " KiB." << std::endl;
+
+  // std::sort(disk->Files.begin(), disk->Files.end(), [](auto&& a, auto&& b) {
+  //   if(a.in_use && b.in_use) {
+  //     return a.size > b.size;
+  //   }
+
+  //   if(!a.in_use) {
+  //     return false;
+  //   }
+
+  //   if(!b.in_use) {
+  //     return true;
+  //   }
+
+  //   return false;
+  // });
+
+  // std::transform(
+  //     disk->Files.begin(), disk->Files.begin() + 24,
+  //     std::ostream_iterator<std::wstring, wchar_t>(std::wcout, L"\n"),
+  //     [](auto&& f) { return f.name + L", " + std::to_wstring(f.size); });
   return 0;
 }

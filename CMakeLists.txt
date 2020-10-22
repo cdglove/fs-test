@@ -42,7 +42,7 @@ if(WIN32)
     target_link_libraries(test-usn PUBLIC Boost::timer)
     add_executable(test-usn-threaded test-usn-threaded.cpp)
     target_link_libraries(test-usn-threaded PUBLIC Boost::timer Boost::thread)
-    add_executable(test-mft test-mft.cpp)
+    add_executable(test-mft test-mft.cpp MftParser.cpp)
     target_link_libraries(test-mft PUBLIC Boost::timer)
 endif()
 
