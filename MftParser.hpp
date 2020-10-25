@@ -18,8 +18,21 @@
 #include <string>
 #include <cstddef>
 #include <vector>
+#include <ctime>
 
 namespace fsdb {
+
+struct MftFile {
+  std::uint64_t parent = 0;
+  std::time_t created = 0;
+  std::time_t accessed = 0;
+  std::time_t modified = 0;
+  std::time_t updated = 0;
+  std::uint64_t size = 0;
+  std::wstring name;
+  bool directory = false;
+  bool in_use = false;
+};
 
 class MftParser {
  public:
@@ -29,6 +42,10 @@ class MftParser {
   void open(std::wstring volume);
   void close();
   void read();
+  
+  std::vector<MftFile>& TEMP_files() {
+    return files_;
+  }
 
  private:
   void load_boot_sector();
@@ -46,6 +63,8 @@ class MftParser {
   std::uint64_t mft_size_ = 0;
   std::uint64_t mft_record_count_ = 0;
   std::uint64_t mft_current_record_ = 0;
+  std::vector<MftFile> files_;
+  
 };
 
 } // namespace fsdb
