@@ -17,13 +17,6 @@
 #include <iostream>
 #include <numeric>
 
-namespace fsdb {
-extern std::uint64_t checked;
-extern std::uint64_t not_used;
-extern std::uint64_t no_name;
-extern std::uint64_t no_32name;
-extern std::uint64_t found;
-} // namespace fsdb
 int main() {
   boost::timer::auto_cpu_timer t;
   fsdb::MftParser parser;
@@ -51,10 +44,6 @@ int main() {
   std::cout << "test-mft found " << total_count << " files totalling "
             << total_size / 1024 << " KiB." << std::endl;
 
-  std::cout << "checked=" << fsdb::checked << " not_used=" << fsdb::not_used
-            << " no_name=" << fsdb::no_name << " no_32name=" << fsdb::no_32name
-            << " found=" << fsdb::found << std::endl;
-
   std::sort(files.begin(), files.end(), [](auto&& a, auto&& b) {
     if(a.in_use && b.in_use) {
       return a.size > b.size;
@@ -64,16 +53,17 @@ int main() {
       return false;
     }
 
-    if(!b.in_use) {
+    if(!b.in_use)
       return true;
     }
 
     return false;
-  });
+});
 
-  std::transform(
-      files.begin(), files.begin() + 24,
-      std::ostream_iterator<std::wstring, wchar_t>(std::wcout, L"\n"),
-      [](auto&& f) { return f.name + L", " + std::to_wstring(f.size); });
-  return 0;
+std::transform(
+    files.begin(),
+    files.begin() + 24,
+    std::ostream_iterator<std::wstring, wchar_t>(std::wcout, L"\n"),
+    [](auto&& f) { return f.name + L", " + std::to_wstring(f.size); });
+return 0;
 }

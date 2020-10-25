@@ -12,17 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "MftParser.hpp"
-#include <boost/throw_exception.hpp>
-#include <exception>
-#include <iostream>
-#include <stdexcept>
-#include <vector>
 
+#include <boost/assert.hpp>
 #include <boost/core/ignore_unused.hpp>
-#include <boost/scope_exit.hpp>
+#include <boost/throw_exception.hpp>
 #include <boost/winapi/access_rights.hpp>
 #include <boost/winapi/config.hpp>
 #include <boost/winapi/file_management.hpp>
+#include <exception>
+#include <stdexcept>
+#include <vector>
 
 extern "C" {
 BOOST_WINAPI_IMPORT boost::winapi::BOOL_ BOOST_WINAPI_WINAPI_CC SetFilePointerEx(
@@ -577,7 +576,6 @@ void MftParser::read_data_run(std::uint64_t cluster, std::uint64_t count) {
 
   std::uint32_t clusters_per_read = 1024;
   auto read_count = count / clusters_per_read;
-  std::cout << "Read: " << cluster << " " << count << std::endl;
   auto bytes_per_read = clusters_per_read * bytes_per_cluster_;
   std::vector<std::byte> buffer(bytes_per_read);
 
@@ -608,18 +606,11 @@ void MftParser::read_data_run(std::uint64_t cluster, std::uint64_t count) {
   process_mft_read_buffer(buffer);
 }
 
-std::uint64_t checked = 0;
-std::uint64_t not_used = 0;
-std::uint64_t no_name = 0;
-std::uint64_t no_32name = 0;
-std::uint64_t found = 0;
 void MftParser::process_mft_read_buffer(std::vector<std::byte>& buffer) {
   for(auto i = buffer.begin(), e = buffer.end(); i != e;
       i += bytes_per_file_record_) {
     NtfsFileRecord const* record = file_record_from_buffer(&*i);
-    ++checked;
     if(!(record->Flags & NtfsFileRecord::Flag::InUse)) {
-      ++not_used;
       continue;
     }
 
@@ -632,14 +623,12 @@ void MftParser::process_mft_read_buffer(std::vector<std::byte>& buffer) {
           if(name_attribute->NameTypes) {
             if(!(name_attribute->NameTypes &
                  NtfsFilenameAttribute::NameType::Win32)) {
-              ++no_32name;
               continue;
             }
           }
 
           MftFile& f = files_[record->RecordId];
           f.in_use = true;
-          ++found;
           f.name = {name_attribute->Name, name_attribute->NameLength};
           f.parent = name_attribute->DirectoryRecordId & 0x0000ffffffffffff;
           f.size = name_attribute->DataSize;
