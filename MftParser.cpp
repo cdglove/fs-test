@@ -41,15 +41,80 @@ namespace fsdb {
 
 namespace {
 
+template <typename Enum>
+class EnumFlags {
+ public:
+  using StorageType = std::underlying_type_t<Enum>;
+
+  static_assert(std::is_enum_v<Enum>, "Enum must be an enum type");
+  explicit EnumFlags(Enum e)
+      : bits_(static_cast<StorageType>(e)) {
+  }
+
+  EnumFlags& operator=(EnumFlags e) {
+    bits_ = static_cast<StorageType>(e);
+    return *this;
+  }
+
+  EnumFlags& operator&=(EnumFlags e) {
+    bits_ &= e.bits_;
+    return *this;
+  }
+
+  EnumFlags& operator&=(Enum e) {
+    bits_ &= static_cast<StorageType>(e);
+    return *this;
+  }
+
+  EnumFlags& operator|=(EnumFlags e) {
+    bits_ |= e.bits_;
+    return *this;
+  }
+
+  EnumFlags& operator|=(Enum e) {
+    bits_ |= static_cast<StorageType>(e);
+    return *this;
+  }
+
+  explicit operator bool() const {
+    return bits_ != 0;
+  }
+
+  friend EnumFlags operator&(EnumFlags a, EnumFlags b) {
+    return EnumFlags(a.bits_ & b.bits_, 0);
+  }
+
+  friend EnumFlags operator&(Enum a, EnumFlags b) {
+    return EnumFlags(static_cast<StorageType>(a) & b.bits_, 0);
+  }
+
+  friend EnumFlags operator&(EnumFlags a, Enum b) {
+    return EnumFlags(a.bits_ & static_cast<StorageType>(b), 0);
+  }
+
+  friend EnumFlags operator|(EnumFlags a, EnumFlags b) {
+    return EnumFlags(a.bits_ | b.bits_, 0);
+  }
+
+  friend EnumFlags operator|(Enum a, EnumFlags b) {
+    return EnumFlags(static_cast<StorageType>(a) | b.bits_, 0);
+  }
+
+  friend EnumFlags operator|(EnumFlags a, Enum b) {
+    return EnumFlags(a.bits_ | static_cast<StorageType>(b), 0);
+  }
+
+ private:
+  EnumFlags(StorageType bits, int)
+      : bits_(bits) {
+  }
+
+  StorageType bits_;
+};
+
 // So we're compatible with window.h without inlcuding it.
-using UCHAR = boost::winapi::UCHAR_;
 using DWORD = boost::winapi::DWORD_;
-using USHORT = boost::winapi::USHORT_;
-using ULONG = boost::winapi::ULONG_;
-using ULONGLONG = boost::winapi::ULONGLONG_;
 using LARGE_INTEGER = boost::winapi::LARGE_INTEGER_;
-using USN = boost::winapi::USN_;
-using BOOLEAN = boost::winapi::BOOLEAN_;
 using FILETIME = boost::winapi::FILETIME_;
 using WCHAR = boost::winapi::WCHAR_;
 
@@ -89,24 +154,29 @@ struct BootBlock {
 
 #pragma pack(pop)
 
+// All ntfs layour data taken from
+// https://flatcap.org/linux-ntfs/ntfs/
+
+// https://flatcap.org/linux-ntfs/ntfs/concepts/file_record.html
 struct NtfsFileRecord {
-  enum Flag : std::uint16_t { None = 0, InUse = 1, Directory = 2 };
-  ULONG Type; // Magic int 'FILE', or 'ELIF' in little endian.
-  USHORT UsaOffset;
-  USHORT UsaCount;
-  USN Usn;
-  USHORT SequenceNumber;
-  USHORT LinkCount;
-  USHORT AttributesOffset;
-  USHORT Flags; // NftsFileRecord::Flag
-  ULONG BytesInUse;
-  ULONG BytesAllocated;
-  LARGE_INTEGER BaseFileRecord;
-  USHORT NextAttributeNumber;
-  USHORT unused;
-  ULONG RecordId;
+  enum class Flag : std::uint16_t { None = 0, InUse = 1, Directory = 2 };
+  std::uint32_t Type; // Magic int 'FILE', or 'ELIF' in little endian.
+  std::uint16_t UsaOffset;
+  std::uint16_t UsaCount;
+  std::uint64_t Usn;
+  std::uint16_t SequenceNumber;
+  std::uint16_t LinkCount;
+  std::uint16_t AttributesOffset;
+  EnumFlags<Flag> Flags;
+  std::uint32_t BytesInUse;
+  std::uint32_t BytesAllocated;
+  std::uint64_t BaseFileRecord;
+  std::uint16_t NextAttributeNumber;
+  std::uint16_t unused;
+  std::uint32_t RecordId;
 };
 
+// https://flatcap.org/linux-ntfs/ntfs/attributes/index.html
 enum class NtfsAttributeType : std::uint32_t {
   StandardInformation = 0x10,
   AttributeList = 0x20,
@@ -129,49 +199,53 @@ enum class NtfsAttributeType : std::uint32_t {
   LastAttribute = LoggedUtilityStream,
 };
 
-struct NtfsAttribute {
-  enum Flag : std::uint16_t {
+// https://flatcap.org/linux-ntfs/ntfs/concepts/attribute_header.html
+struct NtfsAttributeHeader {
+  enum class Flag : std::uint16_t {
     None = 0,
     Compressed = 1,
   };
 
   NtfsAttributeType Type;
-  ULONG Length;
-  BOOLEAN Nonresident;
-  UCHAR NameLength;
-  USHORT NameOffset; // Starts form the Attribute Offset
-  USHORT Flags;      // NtfsAttribute::Flag
-  USHORT AttributeNumber;
+  std::uint32_t Length;
+  std::uint8_t Nonresident;
+  std::uint8_t NameLength;
+  std::uint16_t NameOffset;
+  EnumFlags<Flag> Flags;
+  std::uint16_t AttributeNumber;
 };
 
-struct NtfsResidentAttribute {
-  NtfsAttribute Attribute;
-  ULONG ValueLength;
-  USHORT ValueOffset; // Starts from the Attribute
-  USHORT Flags;       // 0x0001 Indexed
+struct NtfsResidentAttributeHeader : NtfsAttributeHeader {
+  enum class Flag : std::uint16_t {
+    None = 0,
+    Indexed = 1,
+  };
+
+  std::uint32_t ValueLength;
+  std::uint16_t ValueOffset;
+  EnumFlags<Flag> Flags;
 };
 
 } // namespace
 
 // Sadly needs to be in global scope for the ptr in the header.
-struct NtfsNonResidentAttribute {
-  NtfsAttribute Attribute;
-  ULONGLONG FirstVcn;
-  ULONGLONG LastVcn;
-  USHORT RunArrayOffset;
-  USHORT CompressionUnit;
-  UCHAR AligmentOrReserved[4];
-  ULONGLONG AllocatedSize;
-  ULONGLONG DataSize;
-  ULONGLONG InitializedSize;
-  ULONGLONG CompressedSize; // Only when compressed
+struct NtfsNonResidentAttributeHeader : NtfsAttributeHeader {
+  std::uint64_t FirstVcn;
+  std::uint64_t LastVcn;
+  std::uint16_t RunArrayOffset;
+  std::uint16_t CompressionUnit;
+  std::uint8_t AligmentOrReserved[4];
+  std::uint64_t AllocatedSize;
+  std::uint64_t DataSize;
+  std::uint64_t InitializedSize;
+  std::uint64_t CompressedSize;
 };
 
 namespace {
 
 // https://flatcap.org/linux-ntfs/ntfs/attributes/file_name.html
 struct NtfsFilenameAttribute {
-  enum Flag : std::uint32_t {
+  enum class Flag : std::uint32_t {
     ReadOnly = 0x1,
     Hidden = 0x2,
     System = 0x4,
@@ -195,16 +269,16 @@ struct NtfsFilenameAttribute {
     DOS = 2,
   };
 
-  ULONGLONG DirectoryRecordId; // points to a MFT Index of a directory
+  std::uint64_t DirectoryRecordId; // points to a MFT Index of a directory
   FILETIME CreationTime; // saved on creation, changed when filename changes
   FILETIME ChangeTime;
   FILETIME LastWriteTime;
   FILETIME LastAccessTime;
-  ULONGLONG AllocatedSize;
-  ULONGLONG DataSize;
-  std::uint32_t Flags;
-  ULONG AligmentOrReserved;
-  UCHAR NameLength;
+  std::uint64_t AllocatedSize;
+  std::uint64_t DataSize;
+  EnumFlags<Flag> Flags;
+  std::uint32_t AligmentOrReserved;
+  std::uint8_t NameLength;
   std::uint8_t NameTypes;
   WCHAR Name[1];
 };
@@ -221,25 +295,25 @@ Destination* offset_cast(Source* s, std::size_t offset) {
 }
 
 template <typename T>
-T const* resident_cast(NtfsAttribute const* attr) {
+T const* resident_cast(NtfsAttributeHeader const* attr) {
   if(attr->Nonresident) {
     return nullptr;
   }
 
-  auto ra = reinterpret_cast<NtfsResidentAttribute const*>(attr);
+  auto ra = reinterpret_cast<NtfsResidentAttributeHeader const*>(attr);
   return offset_cast<T>(ra, ra->ValueOffset);
 }
 
-NtfsNonResidentAttribute const* nonresident_cast(NtfsAttribute const* attr) {
+NtfsNonResidentAttributeHeader const* nonresident_cast(NtfsAttributeHeader const* attr) {
   if(!attr->Nonresident) {
     return nullptr;
   }
-  return reinterpret_cast<NtfsNonResidentAttribute const*>(attr);
+  return reinterpret_cast<NtfsNonResidentAttributeHeader const*>(attr);
 }
 
 class DataRun {
  public:
-  DataRun(NtfsNonResidentAttribute const* mft)
+  DataRun(NtfsNonResidentAttributeHeader const* mft)
       : DataRun(offset_cast<std::uint8_t>(mft, mft->RunArrayOffset), 0) {
   }
 
@@ -287,14 +361,14 @@ class DataRun {
 };
 
 bool fix_file_record(NtfsFileRecord* file) {
-  USHORT* usa = reinterpret_cast<USHORT*>(
+  std::uint16_t* usa = reinterpret_cast<std::uint16_t*>(
       reinterpret_cast<std::byte*>(file) + file->UsaOffset);
-  USHORT* sector = reinterpret_cast<USHORT*>(file);
+  std::uint16_t* sector = reinterpret_cast<std::uint16_t*>(file);
 
   if(file->UsaCount > 4) {
     return false;
   }
-  for(ULONG i = 1; i < file->UsaCount; i++) {
+  for(std::uint32_t i = 1; i < file->UsaCount; i++) {
     sector[255] = usa[i];
     sector += 256;
   }
@@ -306,16 +380,16 @@ class AttributeList {
  public:
   AttributeList(NtfsFileRecord const* file)
       : record_(file)
-      , current_(offset_cast<NtfsAttribute>(file, file->AttributesOffset)) {
+      , current_(offset_cast<NtfsAttributeHeader>(file, file->AttributesOffset)) {
   }
 
-  NtfsAttribute const* next() {
+  NtfsAttributeHeader const* next() {
     if(current_->Length > 0 && current_->Length < record_->BytesInUse) {
-      current_ = offset_cast<NtfsAttribute>(current_, current_->Length);
+      current_ = offset_cast<NtfsAttributeHeader>(current_, current_->Length);
     }
     else if(current_->Nonresident) {
-      current_ = offset_cast<NtfsAttribute>(
-          current_, sizeof(NtfsNonResidentAttribute));
+      current_ = offset_cast<NtfsAttributeHeader>(
+          current_, sizeof(NtfsNonResidentAttributeHeader));
     }
 
     if(current_->Type == NtfsAttributeType::Terminator) {
@@ -325,17 +399,18 @@ class AttributeList {
     return current();
   }
 
-  NtfsAttribute const* current() const {
+  NtfsAttributeHeader const* current() const {
     return current_;
   }
 
  private:
   NtfsFileRecord const* record_;
-  NtfsAttribute const* current_;
+  NtfsAttributeHeader const* current_;
 };
 
-NtfsAttribute const* find_attribute(NtfsFileRecord const* file, NtfsAttributeType type) {
-  auto attribute = offset_cast<NtfsAttribute>(file, file->AttributesOffset);
+NtfsAttributeHeader const* find_attribute(
+    NtfsFileRecord const* file, NtfsAttributeType type) {
+  auto attribute = offset_cast<NtfsAttributeHeader>(file, file->AttributesOffset);
   int stop = std::min<int>(8, file->NextAttributeNumber);
   for(int i = 0; i < stop; ++i) {
     if(attribute->Type == type) {
@@ -351,11 +426,11 @@ NtfsAttribute const* find_attribute(NtfsFileRecord const* file, NtfsAttributeTyp
     }
 
     if(attribute->Length > 0 && attribute->Length < file->BytesInUse) {
-      attribute = offset_cast<NtfsAttribute>(attribute, attribute->Length);
+      attribute = offset_cast<NtfsAttributeHeader>(attribute, attribute->Length);
     }
     else if(attribute->Nonresident) {
-      attribute = offset_cast<NtfsAttribute>(
-          attribute, sizeof(NtfsNonResidentAttribute));
+      attribute = offset_cast<NtfsAttributeHeader>(
+          attribute, sizeof(NtfsNonResidentAttributeHeader));
     }
   }
   return nullptr;
@@ -367,7 +442,7 @@ NtfsFileRecord const* file_record_from_buffer(std::byte* data) {
   return file;
 }
 
-static std::time_t to_time_t(const FILETIME& ft) {
+std::time_t to_time_t(const FILETIME& ft) {
   std::int64_t t = (static_cast<std::int64_t>(ft.dwHighDateTime) << 32) +
                    ft.dwLowDateTime;
 #if !defined(BOOST_MSVC) || BOOST_MSVC > 1300 // > VC++ 7.0
@@ -569,7 +644,8 @@ void MftParser::process_mft_read_buffer(std::vector<std::byte>& buffer) {
           f.parent = name_attribute->DirectoryRecordId & 0x0000ffffffffffff;
           f.size = name_attribute->DataSize;
           f.modified = to_time_t(name_attribute->LastWriteTime);
-          f.directory = record->Flags & NtfsFileRecord::Flag::Directory;
+          f.directory = record->Flags & NtfsFileRecord::Flag::Directory ? true
+                                                                        : false;
         } break;
         case NtfsAttributeType::Data: {
           if(auto data_attribute = nonresident_cast(current)) {

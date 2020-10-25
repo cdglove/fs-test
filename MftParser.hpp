@@ -15,10 +15,10 @@
 #define FSDB_MFTPARSER_HPP
 
 #include <boost/winapi/handles.hpp>
-#include <string>
 #include <cstddef>
-#include <vector>
 #include <ctime>
+#include <string>
+#include <vector>
 
 namespace fsdb {
 
@@ -42,7 +42,7 @@ class MftParser {
   void open(std::wstring volume);
   void close();
   void read();
-  
+
   std::vector<MftFile>& TEMP_files() {
     return files_;
   }
@@ -58,13 +58,12 @@ class MftParser {
   std::uint32_t bytes_per_cluster_ = 0;
   std::uint64_t bytes_per_file_record_ = 0;
   std::vector<std::byte> mft_buffer_;
-  struct NtfsNonResidentAttribute const* mft_data_attribute_ = nullptr;
+  struct NtfsNonResidentAttributeHeader const* mft_data_attribute_ = nullptr;
   std::uint64_t mft_location_ = 0;
   std::uint64_t mft_size_ = 0;
   std::uint64_t mft_record_count_ = 0;
   std::uint64_t mft_current_record_ = 0;
   std::vector<MftFile> files_;
-  
 };
 
 } // namespace fsdb
