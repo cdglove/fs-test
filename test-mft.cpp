@@ -44,26 +44,27 @@ int main() {
   std::cout << "test-mft found " << total_count << " files totalling "
             << total_size / 1024 << " KiB." << std::endl;
 
-  std::sort(files.begin(), files.end(), [](auto&& a, auto&& b) {
-    if(a.in_use && b.in_use) {
-      return a.size > b.size;
-    }
+  std::partial_sort(
+      files.begin(), files.begin() + 24, files.begin() + files.size(),
+      [](auto&& a, auto&& b) {
+        if(a.in_use && b.in_use) {
+          return a.size > b.size;
+        }
 
-    if(!a.in_use) {
-      return false;
-    }
+        if(!a.in_use) {
+          return false;
+        }
 
-    if(!b.in_use)
-      return true;
-    }
+        if(!b.in_use) {
+          return true;
+        }
 
-    return false;
-});
+        return false;
+      });
 
-std::transform(
-    files.begin(),
-    files.begin() + 24,
-    std::ostream_iterator<std::wstring, wchar_t>(std::wcout, L"\n"),
-    [](auto&& f) { return f.name + L", " + std::to_wstring(f.size); });
-return 0;
+  std::transform(
+      files.begin(), files.begin() + 24,
+      std::ostream_iterator<std::wstring, wchar_t>(std::wcout, L"\n"),
+      [](auto&& f) { return f.name + L", " + std::to_wstring(f.size); });
+  return 0;
 }

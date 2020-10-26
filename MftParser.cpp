@@ -33,10 +33,7 @@ BOOST_WINAPI_IMPORT boost::winapi::BOOL_ BOOST_WINAPI_WINAPI_CC SetFilePointerEx
 
 namespace boost { namespace winapi {
 using ::SetFilePointerEx;
-using USN_ = boost::winapi::LONGLONG_;
 }} // namespace boost::winapi
-
-namespace fsdb {
 
 namespace {
 
@@ -75,7 +72,7 @@ class EnumFlags {
     return *this;
   }
 
-  explicit operator bool() const {
+  operator bool() const {
     return bits_ != 0;
   }
 
@@ -117,13 +114,13 @@ using LARGE_INTEGER = boost::winapi::LARGE_INTEGER_;
 using FILETIME = boost::winapi::FILETIME_;
 using WCHAR = boost::winapi::WCHAR_;
 
-decltype(auto) GENERIC_READ = boost::winapi::GENERIC_READ_;
-decltype(auto) FILE_SHARE_READ = boost::winapi::FILE_SHARE_READ_;
-decltype(auto) FILE_SHARE_WRITE = boost::winapi::FILE_SHARE_WRITE_;
-decltype(auto) OPEN_EXISTING = boost::winapi::OPEN_EXISTING_;
-decltype(auto) FILE_FLAG_NO_BUFFERING = boost::winapi::FILE_FLAG_NO_BUFFERING_;
-decltype(auto) FILE_BEGIN = boost::winapi::FILE_BEGIN_;
-decltype(auto) INVALID_HANDLE_VALUE = boost::winapi::INVALID_HANDLE_VALUE_;
+decltype(auto) constexpr GENERIC_READ = boost::winapi::GENERIC_READ_;
+decltype(auto) constexpr FILE_SHARE_READ = boost::winapi::FILE_SHARE_READ_;
+decltype(auto) constexpr FILE_SHARE_WRITE = boost::winapi::FILE_SHARE_WRITE_;
+decltype(auto) constexpr OPEN_EXISTING = boost::winapi::OPEN_EXISTING_;
+decltype(auto) constexpr FILE_FLAG_NO_BUFFERING = boost::winapi::FILE_FLAG_NO_BUFFERING_;
+decltype(auto) constexpr FILE_BEGIN = boost::winapi::FILE_BEGIN_;
+const boost::winapi::HANDLE_ INVALID_HANDLE_VALUE = boost::winapi::INVALID_HANDLE_VALUE_;
 
 #pragma pack(push, 1)
 struct BootBlock {
@@ -153,7 +150,7 @@ struct BootBlock {
 
 #pragma pack(pop)
 
-// All ntfs layour data taken from
+// All ntfs information taken from
 // https://flatcap.org/linux-ntfs/ntfs/
 
 // https://flatcap.org/linux-ntfs/ntfs/concepts/file_record.html
@@ -225,9 +222,6 @@ struct NtfsResidentAttributeHeader : NtfsAttributeHeader {
   EnumFlags<Flag> Flags;
 };
 
-} // namespace
-
-// Sadly needs to be in global scope for the ptr in the header.
 struct NtfsNonResidentAttributeHeader : NtfsAttributeHeader {
   std::uint64_t FirstVcn;
   std::uint64_t LastVcn;
@@ -239,8 +233,6 @@ struct NtfsNonResidentAttributeHeader : NtfsAttributeHeader {
   std::uint64_t InitializedSize;
   std::uint64_t CompressedSize;
 };
-
-namespace {
 
 // https://flatcap.org/linux-ntfs/ntfs/attributes/file_name.html
 struct NtfsFilenameAttribute {
@@ -293,21 +285,33 @@ Destination* offset_cast(Source* s, std::size_t offset) {
   return reinterpret_cast<Destination*>(reinterpret_cast<std::byte*>(s) + offset);
 }
 
-template <typename T>
-T const* resident_cast(NtfsAttributeHeader const* attr) {
+NtfsResidentAttributeHeader const* to_resident(NtfsAttributeHeader const* attr) {
   if(attr->Nonresident) {
     return nullptr;
   }
 
-  auto ra = reinterpret_cast<NtfsResidentAttributeHeader const*>(attr);
-  return offset_cast<T>(ra, ra->ValueOffset);
+  return reinterpret_cast<NtfsResidentAttributeHeader const*>(attr);
 }
 
-NtfsNonResidentAttributeHeader const* nonresident_cast(NtfsAttributeHeader const* attr) {
+NtfsNonResidentAttributeHeader const* to_nonresident(NtfsAttributeHeader const* attr) {
   if(!attr->Nonresident) {
     return nullptr;
   }
   return reinterpret_cast<NtfsNonResidentAttributeHeader const*>(attr);
+}
+
+template <typename T>
+T const* get_resident_attribute(NtfsAttributeHeader const* attr) {
+  if(attr->Nonresident) {
+    return nullptr;
+  }
+
+  auto ra = to_resident(attr);
+  if(ra->ValueLength < sizeof(T)) {
+    return nullptr;
+  }
+
+  return offset_cast<T>(ra, ra->ValueOffset);
 }
 
 class DataRun {
@@ -461,8 +465,20 @@ std::time_t to_time_t(const FILETIME& ft) {
 
 } // namespace
 
+namespace fsdb {
+
+struct MftParser::Impl {
+  NtfsNonResidentAttributeHeader const* mft_;
+};
+
+MftParser::MftParser() {
+  static_assert(
+      sizeof(Impl) <= sizeof(impl_storage_), "Increase size of impl_storage_");
+  new(&impl_storage_) Impl();
+}
 MftParser::~MftParser() {
   close();
+  impl().~Impl();
 }
 
 void MftParser::open(std::wstring volume) {
@@ -494,8 +510,8 @@ void MftParser::close() {
 }
 
 void MftParser::read() {
-  DataRun run(mft_data_attribute_);
-  auto count = mft_data_attribute_->LastVcn + 1;
+  DataRun run(impl().mft_);
+  auto count = impl().mft_->LastVcn + 1;
 
   for(auto remaining = count; remaining != 0; run = run.next()) {
     auto read_cluster_count = std::min(run.size(), remaining);
@@ -561,8 +577,8 @@ void MftParser::load_mft() {
         std::runtime_error("Failed to find applicable attributes."));
   }
 
-  mft_data_attribute_ = nonresident_cast(data_attrib);
-  mft_size_ = mft_data_attribute_->DataSize;
+  impl().mft_ = to_nonresident(data_attrib);
+  mft_size_ = impl().mft_->DataSize;
   BOOST_ASSERT(mft_size_ % bytes_per_file_record_ == 0);
   mft_record_count_ = mft_size_ / bytes_per_file_record_;
   files_.resize(mft_record_count_ + 16); // + 16 for special files.
@@ -619,7 +635,8 @@ void MftParser::process_mft_read_buffer(std::vector<std::byte>& buffer) {
       auto current = attributes.current();
       switch(current->Type) {
         case NtfsAttributeType::FileName: {
-          auto name_attribute = resident_cast<NtfsFilenameAttribute>(current);
+          auto name_attribute = get_resident_attribute<NtfsFilenameAttribute>(
+              current);
           if(name_attribute->NameTypes) {
             if(!(name_attribute->NameTypes &
                  NtfsFilenameAttribute::NameType::Win32)) {
@@ -633,11 +650,10 @@ void MftParser::process_mft_read_buffer(std::vector<std::byte>& buffer) {
           f.parent = name_attribute->DirectoryRecordId & 0x0000ffffffffffff;
           f.size = name_attribute->DataSize;
           f.modified = to_time_t(name_attribute->LastWriteTime);
-          f.directory = record->Flags & NtfsFileRecord::Flag::Directory ? true
-                                                                        : false;
+          f.directory = record->Flags & NtfsFileRecord::Flag::Directory;
         } break;
         case NtfsAttributeType::Data: {
-          if(auto data_attribute = nonresident_cast(current)) {
+          if(auto data_attribute = to_nonresident(current)) {
             MftFile& f = files_[record->RecordId];
             f.size = data_attribute->DataSize;
           }
@@ -646,4 +662,13 @@ void MftParser::process_mft_read_buffer(std::vector<std::byte>& buffer) {
     }
   }
 }
+
+MftParser::Impl const& MftParser::impl() const {
+  return reinterpret_cast<Impl const&>(impl_storage_);
+}
+
+MftParser::Impl& MftParser::impl() {
+  return reinterpret_cast<Impl&>(impl_storage_);
+}
+
 } // namespace fsdb

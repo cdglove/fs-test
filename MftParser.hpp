@@ -36,7 +36,7 @@ struct MftFile {
 
 class MftParser {
  public:
-  MftParser() = default;
+  MftParser();
   ~MftParser();
 
   void open(std::wstring volume);
@@ -58,12 +58,15 @@ class MftParser {
   std::uint32_t bytes_per_cluster_ = 0;
   std::uint64_t bytes_per_file_record_ = 0;
   std::vector<std::byte> mft_buffer_;
-  struct NtfsNonResidentAttributeHeader const* mft_data_attribute_ = nullptr;
+  std::aligned_storage_t<sizeof(void*), alignof(void*)> impl_storage_;
   std::uint64_t mft_location_ = 0;
   std::uint64_t mft_size_ = 0;
   std::uint64_t mft_record_count_ = 0;
   std::uint64_t mft_current_record_ = 0;
   std::vector<MftFile> files_;
+  struct Impl;
+  Impl& impl();
+  Impl const& impl() const;
 };
 
 } // namespace fsdb
