@@ -227,7 +227,7 @@ struct NtfsNonResidentAttributeHeader : NtfsAttributeHeader {
   std::uint64_t LastVcn;
   std::uint16_t RunArrayOffset;
   std::uint16_t CompressionUnit;
-  std::uint8_t AligmentOrReserved[4];
+  std::uint8_t  Pad_[4];
   std::uint64_t AllocatedSize;
   std::uint64_t DataSize;
   std::uint64_t InitializedSize;
@@ -254,7 +254,7 @@ struct NtfsFilenameAttribute {
     IndexView = 0x20000000,
   };
 
-  enum NameType : std::uint8_t {
+  enum class NameType : std::uint8_t {
     Posix = 0,
     Win32 = 1,
     DOS = 2,
@@ -270,7 +270,7 @@ struct NtfsFilenameAttribute {
   EnumFlags<Flag> Flags;
   std::uint32_t AligmentOrReserved;
   std::uint8_t NameLength;
-  std::uint8_t NameTypes;
+  EnumFlags<NameType> NameTypes;
   WCHAR Name[1];
 };
 
@@ -289,7 +289,6 @@ NtfsResidentAttributeHeader const* to_resident(NtfsAttributeHeader const* attr) 
   if(attr->Nonresident) {
     return nullptr;
   }
-
   return reinterpret_cast<NtfsResidentAttributeHeader const*>(attr);
 }
 
@@ -301,17 +300,12 @@ NtfsNonResidentAttributeHeader const* to_nonresident(NtfsAttributeHeader const* 
 }
 
 template <typename T>
-T const* get_resident_attribute(NtfsAttributeHeader const* attr) {
-  if(attr->Nonresident) {
+T const* attribute_cast(NtfsResidentAttributeHeader const* attr) {
+  if(attr->ValueLength < sizeof(T)) {
     return nullptr;
   }
 
-  auto ra = to_resident(attr);
-  if(ra->ValueLength < sizeof(T)) {
-    return nullptr;
-  }
-
-  return offset_cast<T>(ra, ra->ValueOffset);
+  return offset_cast<T>(attr, attr->ValueOffset);
 }
 
 class DataRun {
@@ -635,14 +629,20 @@ void MftParser::process_mft_read_buffer(std::vector<std::byte>& buffer) {
       auto current = attributes.current();
       switch(current->Type) {
         case NtfsAttributeType::FileName: {
-          auto name_attribute = get_resident_attribute<NtfsFilenameAttribute>(
-              current);
-          if(name_attribute->NameTypes) {
-            if(!(name_attribute->NameTypes &
-                 NtfsFilenameAttribute::NameType::Win32)) {
-              continue;
-            }
+          auto name_attribute = attribute_cast<NtfsFilenameAttribute>(to_resident(current));
+          if(!name_attribute) {
+            continue;
           }
+          
+          // Seems we don't need to check the name types.
+          // if(!name_attribute->NameTypes) {
+          //   continue;
+          // }
+          //   if(!(name_attribute->NameTypes &
+          //        NtfsFilenameAttribute::NameType::Win32)) {
+          //     continue;
+          //   }
+          // }
 
           MftFile& f = files_[record->RecordId];
           f.in_use = true;
