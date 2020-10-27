@@ -15,10 +15,12 @@
 
 #include <boost/assert.hpp>
 #include <boost/core/ignore_unused.hpp>
+#include <boost/nowide/convert.hpp>
 #include <boost/throw_exception.hpp>
 #include <boost/winapi/access_rights.hpp>
 #include <boost/winapi/config.hpp>
 #include <boost/winapi/file_management.hpp>
+#include <cstddef>
 #include <exception>
 #include <stdexcept>
 #include <vector>
@@ -35,7 +37,7 @@ namespace boost { namespace winapi {
 using ::SetFilePointerEx;
 }} // namespace boost::winapi
 
-namespace {
+namespace fsdb {
 
 template <typename Enum>
 class EnumFlags {
@@ -108,20 +110,6 @@ class EnumFlags {
   StorageType bits_;
 };
 
-// So we're compatible with window.h without inlcuding it.
-using DWORD = boost::winapi::DWORD_;
-using LARGE_INTEGER = boost::winapi::LARGE_INTEGER_;
-using FILETIME = boost::winapi::FILETIME_;
-using WCHAR = boost::winapi::WCHAR_;
-
-decltype(auto) constexpr GENERIC_READ = boost::winapi::GENERIC_READ_;
-decltype(auto) constexpr FILE_SHARE_READ = boost::winapi::FILE_SHARE_READ_;
-decltype(auto) constexpr FILE_SHARE_WRITE = boost::winapi::FILE_SHARE_WRITE_;
-decltype(auto) constexpr OPEN_EXISTING = boost::winapi::OPEN_EXISTING_;
-decltype(auto) constexpr FILE_FLAG_NO_BUFFERING = boost::winapi::FILE_FLAG_NO_BUFFERING_;
-decltype(auto) constexpr FILE_BEGIN = boost::winapi::FILE_BEGIN_;
-const boost::winapi::HANDLE_ INVALID_HANDLE_VALUE = boost::winapi::INVALID_HANDLE_VALUE_;
-
 #pragma pack(push, 1)
 struct BootBlock {
   std::uint8_t Jump[3];
@@ -147,7 +135,6 @@ struct BootBlock {
   std::uint8_t Code[0x1AE];
   std::uint16_t BootSignature;
 };
-
 #pragma pack(pop)
 
 // All ntfs information taken from
@@ -227,7 +214,7 @@ struct NtfsNonResidentAttributeHeader : NtfsAttributeHeader {
   std::uint64_t LastVcn;
   std::uint16_t RunArrayOffset;
   std::uint16_t CompressionUnit;
-  std::uint8_t  Pad_[4];
+  std::uint8_t Pad_[4];
   std::uint64_t AllocatedSize;
   std::uint64_t DataSize;
   std::uint64_t InitializedSize;
@@ -261,18 +248,30 @@ struct NtfsFilenameAttribute {
   };
 
   std::uint64_t DirectoryRecordId; // points to a MFT Index of a directory
-  FILETIME CreationTime; // saved on creation, changed when filename changes
-  FILETIME ChangeTime;
-  FILETIME LastWriteTime;
-  FILETIME LastAccessTime;
+  std::int64_t CreationTime; // saved on creation, changed when filename changes
+  std::int64_t ChangeTime;
+  std::int64_t LastWriteTime;
+  std::int64_t LastAccessTime;
   std::uint64_t AllocatedSize;
   std::uint64_t DataSize;
   EnumFlags<Flag> Flags;
   std::uint32_t AligmentOrReserved;
   std::uint8_t NameLength;
   EnumFlags<NameType> NameTypes;
-  WCHAR Name[1];
+  boost::winapi::WCHAR_ Name[1];
 };
+
+namespace {
+
+using DWORD = boost::winapi::DWORD_;
+
+decltype(auto) constexpr GENERIC_READ = boost::winapi::GENERIC_READ_;
+decltype(auto) constexpr FILE_SHARE_READ = boost::winapi::FILE_SHARE_READ_;
+decltype(auto) constexpr FILE_SHARE_WRITE = boost::winapi::FILE_SHARE_WRITE_;
+decltype(auto) constexpr OPEN_EXISTING = boost::winapi::OPEN_EXISTING_;
+decltype(auto) constexpr FILE_FLAG_NO_BUFFERING = boost::winapi::FILE_FLAG_NO_BUFFERING_;
+decltype(auto) constexpr FILE_BEGIN = boost::winapi::FILE_BEGIN_;
+const boost::winapi::HANDLE_ INVALID_HANDLE_VALUE = boost::winapi::INVALID_HANDLE_VALUE_;
 
 template <typename Destination, typename Source>
 Destination const* offset_cast(Source const* s, std::size_t offset) {
@@ -307,6 +306,109 @@ T const* attribute_cast(NtfsResidentAttributeHeader const* attr) {
 
   return offset_cast<T>(attr, attr->ValueOffset);
 }
+
+class AttributeList {
+ public:
+  AttributeList(NtfsFileRecord const* file)
+      : record_(file)
+      , current_(offset_cast<NtfsAttributeHeader>(file, file->AttributesOffset)) {
+  }
+
+  NtfsAttributeHeader const* next() {
+    if(current_->Length > 0 && current_->Length < record_->BytesInUse) {
+      current_ = offset_cast<NtfsAttributeHeader>(current_, current_->Length);
+    }
+    else if(current_->Nonresident) {
+      current_ = offset_cast<NtfsAttributeHeader>(
+          current_, sizeof(NtfsNonResidentAttributeHeader));
+    }
+
+    if(current_->Type == NtfsAttributeType::Terminator) {
+      current_ = nullptr;
+    }
+
+    return current();
+  }
+
+  NtfsAttributeHeader const* current() const {
+    return current_;
+  }
+
+ private:
+  NtfsFileRecord const* record_;
+  NtfsAttributeHeader const* current_;
+};
+
+bool fix_file_record(NtfsFileRecord* file) {
+  std::uint16_t* usa = reinterpret_cast<std::uint16_t*>(
+      reinterpret_cast<std::byte*>(file) + file->UsaOffset);
+  std::uint16_t* sector = reinterpret_cast<std::uint16_t*>(file);
+
+  if(file->UsaCount > 4) {
+    return false;
+  }
+  for(std::uint32_t i = 1; i < file->UsaCount; i++) {
+    sector[255] = usa[i];
+    sector += 256;
+  }
+
+  return true;
+}
+
+std::time_t to_time_t(std::int64_t t) {
+#if !defined(BOOST_MSVC) || BOOST_MSVC > 1300 // > VC++ 7.0
+  if(t == 0) {
+    return {};
+  }
+  t -= 116444736000000000LL;
+#else
+  t -= 116444736000000000;
+#endif
+  t /= 10000000;
+  if(t < 0) {
+    t = 0;
+  }
+  return static_cast<std::time_t>(t);
+}
+
+NtfsAttributeHeader const* find_attribute(
+    NtfsFileRecord const* file, NtfsAttributeType type) {
+  auto attribute = offset_cast<NtfsAttributeHeader>(file, file->AttributesOffset);
+  int stop = std::min<int>(8, file->NextAttributeNumber);
+  for(int i = 0; i < stop; ++i) {
+    if(attribute->Type == type) {
+      return attribute;
+    }
+
+    if(attribute->Type < NtfsAttributeType::FirstAttribute) {
+      break;
+    }
+
+    if(attribute->Type > NtfsAttributeType::LastAttribute) {
+      break;
+    }
+
+    if(attribute->Length > 0 && attribute->Length < file->BytesInUse) {
+      attribute = offset_cast<NtfsAttributeHeader>(attribute, attribute->Length);
+    }
+    else if(attribute->Nonresident) {
+      attribute = offset_cast<NtfsAttributeHeader>(
+          attribute, sizeof(NtfsNonResidentAttributeHeader));
+    }
+  }
+  return nullptr;
+}
+
+NtfsFileRecord const* file_record_from_buffer(std::byte* data) {
+  auto file = reinterpret_cast<NtfsFileRecord*>(data);
+  fix_file_record(file);
+  return file;
+}
+
+} // namespace
+} // namespace fsdb
+
+namespace fsdb {
 
 class DataRun {
  public:
@@ -357,122 +459,10 @@ class DataRun {
   std::uint8_t const* run_ = nullptr;
 };
 
-bool fix_file_record(NtfsFileRecord* file) {
-  std::uint16_t* usa = reinterpret_cast<std::uint16_t*>(
-      reinterpret_cast<std::byte*>(file) + file->UsaOffset);
-  std::uint16_t* sector = reinterpret_cast<std::uint16_t*>(file);
+MftParser::MftParser() = default;
 
-  if(file->UsaCount > 4) {
-    return false;
-  }
-  for(std::uint32_t i = 1; i < file->UsaCount; i++) {
-    sector[255] = usa[i];
-    sector += 256;
-  }
-
-  return true;
-}
-
-class AttributeList {
- public:
-  AttributeList(NtfsFileRecord const* file)
-      : record_(file)
-      , current_(offset_cast<NtfsAttributeHeader>(file, file->AttributesOffset)) {
-  }
-
-  NtfsAttributeHeader const* next() {
-    if(current_->Length > 0 && current_->Length < record_->BytesInUse) {
-      current_ = offset_cast<NtfsAttributeHeader>(current_, current_->Length);
-    }
-    else if(current_->Nonresident) {
-      current_ = offset_cast<NtfsAttributeHeader>(
-          current_, sizeof(NtfsNonResidentAttributeHeader));
-    }
-
-    if(current_->Type == NtfsAttributeType::Terminator) {
-      current_ = nullptr;
-    }
-
-    return current();
-  }
-
-  NtfsAttributeHeader const* current() const {
-    return current_;
-  }
-
- private:
-  NtfsFileRecord const* record_;
-  NtfsAttributeHeader const* current_;
-};
-
-NtfsAttributeHeader const* find_attribute(
-    NtfsFileRecord const* file, NtfsAttributeType type) {
-  auto attribute = offset_cast<NtfsAttributeHeader>(file, file->AttributesOffset);
-  int stop = std::min<int>(8, file->NextAttributeNumber);
-  for(int i = 0; i < stop; ++i) {
-    if(attribute->Type == type) {
-      return attribute;
-    }
-
-    if(attribute->Type < NtfsAttributeType::FirstAttribute) {
-      break;
-    }
-
-    if(attribute->Type > NtfsAttributeType::LastAttribute) {
-      break;
-    }
-
-    if(attribute->Length > 0 && attribute->Length < file->BytesInUse) {
-      attribute = offset_cast<NtfsAttributeHeader>(attribute, attribute->Length);
-    }
-    else if(attribute->Nonresident) {
-      attribute = offset_cast<NtfsAttributeHeader>(
-          attribute, sizeof(NtfsNonResidentAttributeHeader));
-    }
-  }
-  return nullptr;
-}
-
-NtfsFileRecord const* file_record_from_buffer(std::byte* data) {
-  auto file = reinterpret_cast<NtfsFileRecord*>(data);
-  fix_file_record(file);
-  return file;
-}
-
-std::time_t to_time_t(const FILETIME& ft) {
-  std::int64_t t = (static_cast<std::int64_t>(ft.dwHighDateTime) << 32) +
-                   ft.dwLowDateTime;
-#if !defined(BOOST_MSVC) || BOOST_MSVC > 1300 // > VC++ 7.0
-  if(t == 0) {
-    return {};
-  }
-  t -= 116444736000000000LL;
-#else
-  t -= 116444736000000000;
-#endif
-  t /= 10000000;
-  if(t < 0) {
-    t = 0;
-  }
-  return static_cast<std::time_t>(t);
-}
-
-} // namespace
-
-namespace fsdb {
-
-struct MftParser::Impl {
-  NtfsNonResidentAttributeHeader const* mft_;
-};
-
-MftParser::MftParser() {
-  static_assert(
-      sizeof(Impl) <= sizeof(impl_storage_), "Increase size of impl_storage_");
-  new(&impl_storage_) Impl();
-}
 MftParser::~MftParser() {
   close();
-  impl().~Impl();
 }
 
 void MftParser::open(std::wstring volume) {
@@ -503,9 +493,10 @@ void MftParser::close() {
   }
 }
 
-void MftParser::read() {
-  DataRun run(impl().mft_);
-  auto count = impl().mft_->LastVcn + 1;
+std::vector<MftFile> MftParser::read_all() const {
+  files_.reserve(mft_record_count_ + 16); // + 16 for special files.
+  DataRun run(mft_);
+  auto count = mft_->LastVcn + 1;
 
   for(auto remaining = count; remaining != 0; run = run.next()) {
     auto read_cluster_count = std::min(run.size(), remaining);
@@ -514,6 +505,9 @@ void MftParser::read() {
     }
     remaining -= read_cluster_count;
   }
+
+  std::vector<MftFile> ret = std::move(files_);
+  return ret;
 }
 
 void MftParser::load_boot_sector() {
@@ -543,7 +537,7 @@ void MftParser::load_boot_sector() {
 }
 
 void MftParser::load_mft() {
-  LARGE_INTEGER offset;
+  boost::winapi::LARGE_INTEGER_ offset;
   offset.QuadPart = mft_location_;
   boost::winapi::SetFilePointerEx(volume_, offset, nullptr, FILE_BEGIN);
   mft_buffer_.resize(bytes_per_cluster_);
@@ -571,16 +565,14 @@ void MftParser::load_mft() {
         std::runtime_error("Failed to find applicable attributes."));
   }
 
-  impl().mft_ = to_nonresident(data_attrib);
-  mft_size_ = impl().mft_->DataSize;
+  mft_ = to_nonresident(data_attrib);
+  mft_size_ = mft_->DataSize;
   BOOST_ASSERT(mft_size_ % bytes_per_file_record_ == 0);
   mft_record_count_ = mft_size_ / bytes_per_file_record_;
-  files_.resize(mft_record_count_ + 16); // + 16 for special files.
-  mft_current_record_ = 0;
 }
 
-void MftParser::read_data_run(std::uint64_t cluster, std::uint64_t count) {
-  LARGE_INTEGER offset;
+void MftParser::read_data_run(std::uint64_t cluster, std::uint64_t count) const {
+  boost::winapi::LARGE_INTEGER_ offset;
   offset.QuadPart = cluster * bytes_per_cluster_;
   boost::winapi::SetFilePointerEx(volume_, offset, nullptr, FILE_BEGIN);
 
@@ -616,7 +608,7 @@ void MftParser::read_data_run(std::uint64_t cluster, std::uint64_t count) {
   process_mft_read_buffer(buffer);
 }
 
-void MftParser::process_mft_read_buffer(std::vector<std::byte>& buffer) {
+void MftParser::process_mft_read_buffer(std::vector<std::byte>& buffer) const {
   for(auto i = buffer.begin(), e = buffer.end(); i != e;
       i += bytes_per_file_record_) {
     NtfsFileRecord const* record = file_record_from_buffer(&*i);
@@ -624,51 +616,47 @@ void MftParser::process_mft_read_buffer(std::vector<std::byte>& buffer) {
       continue;
     }
 
+    files_.emplace_back();
+    MftFile& f = files_.back();
+
     AttributeList attributes(record);
     for(AttributeList attributes(record); attributes.current(); attributes.next()) {
       auto current = attributes.current();
       switch(current->Type) {
         case NtfsAttributeType::FileName: {
-          auto name_attribute = attribute_cast<NtfsFilenameAttribute>(to_resident(current));
+          auto name_attribute = attribute_cast<NtfsFilenameAttribute>(
+              to_resident(current));
           if(!name_attribute) {
             continue;
           }
-          
-          // Seems we don't need to check the name types.
-          // if(!name_attribute->NameTypes) {
-          //   continue;
-          // }
-          //   if(!(name_attribute->NameTypes &
-          //        NtfsFilenameAttribute::NameType::Win32)) {
-          //     continue;
-          //   }
-          // }
 
-          MftFile& f = files_[record->RecordId];
-          f.in_use = true;
-          f.name = {name_attribute->Name, name_attribute->NameLength};
+          f.id = record->RecordId;
           f.parent = name_attribute->DirectoryRecordId & 0x0000ffffffffffff;
+          f.name = boost::nowide::narrow(
+              name_attribute->Name, name_attribute->NameLength);
           f.size = name_attribute->DataSize;
           f.modified = to_time_t(name_attribute->LastWriteTime);
+          f.created = to_time_t(name_attribute->CreationTime);
+          f.accessed = to_time_t(name_attribute->LastAccessTime);
           f.directory = record->Flags & NtfsFileRecord::Flag::Directory;
+
         } break;
         case NtfsAttributeType::Data: {
           if(auto data_attribute = to_nonresident(current)) {
-            MftFile& f = files_[record->RecordId];
             f.size = data_attribute->DataSize;
           }
         } break;
+        // Silence warning
+        default:
+          break;
       }
+    }
+
+    if(f.name.empty()) {
+      files_.pop_back();
     }
   }
 }
 
-MftParser::Impl const& MftParser::impl() const {
-  return reinterpret_cast<Impl const&>(impl_storage_);
-}
-
-MftParser::Impl& MftParser::impl() {
-  return reinterpret_cast<Impl&>(impl_storage_);
-}
 
 } // namespace fsdb

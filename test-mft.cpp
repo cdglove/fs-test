@@ -21,20 +21,14 @@ int main() {
   boost::timer::auto_cpu_timer t;
   fsdb::MftParser parser;
   parser.open(L"\\\\?\\c:");
-  parser.read();
+  auto files = parser.read_all();
   parser.close();
 
-  auto&& files = parser.TEMP_files();
-  auto total_count = std::count_if(
-      files.begin(), files.end(), [](auto&& f) { return f.in_use; });
+  auto total_count = files.size();
 
   auto total_size = std::accumulate(
       files.begin(), files.end(), std::size_t(0), [](std::size_t v, auto&& f) {
-        if(f.name == L"$BadClus") {
-          return v;
-        }
-
-        if(!f.in_use) {
+        if(f.name == "$BadClus") {
           return v;
         }
 
@@ -46,25 +40,11 @@ int main() {
 
   std::partial_sort(
       files.begin(), files.begin() + 24, files.begin() + files.size(),
-      [](auto&& a, auto&& b) {
-        if(a.in_use && b.in_use) {
-          return a.size > b.size;
-        }
-
-        if(!a.in_use) {
-          return false;
-        }
-
-        if(!b.in_use) {
-          return true;
-        }
-
-        return false;
-      });
+      [](auto&& a, auto&& b) { return a.size > b.size; });
 
   std::transform(
       files.begin(), files.begin() + 24,
-      std::ostream_iterator<std::wstring, wchar_t>(std::wcout, L"\n"),
-      [](auto&& f) { return f.name + L", " + std::to_wstring(f.size); });
+      std::ostream_iterator<std::string>(std::cout, "\n"),
+      [](auto&& f) { return f.name + ", " + std::to_string(f.size); });
   return 0;
 }
