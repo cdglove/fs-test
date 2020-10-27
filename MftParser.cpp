@@ -265,12 +265,12 @@ namespace {
 
 using DWORD = boost::winapi::DWORD_;
 
-decltype(auto) constexpr GENERIC_READ = boost::winapi::GENERIC_READ_;
-decltype(auto) constexpr FILE_SHARE_READ = boost::winapi::FILE_SHARE_READ_;
-decltype(auto) constexpr FILE_SHARE_WRITE = boost::winapi::FILE_SHARE_WRITE_;
-decltype(auto) constexpr OPEN_EXISTING = boost::winapi::OPEN_EXISTING_;
-decltype(auto) constexpr FILE_FLAG_NO_BUFFERING = boost::winapi::FILE_FLAG_NO_BUFFERING_;
-decltype(auto) constexpr FILE_BEGIN = boost::winapi::FILE_BEGIN_;
+DWORD constexpr GENERIC_READ = boost::winapi::GENERIC_READ_;
+DWORD constexpr FILE_SHARE_READ = boost::winapi::FILE_SHARE_READ_;
+DWORD constexpr FILE_SHARE_WRITE = boost::winapi::FILE_SHARE_WRITE_;
+DWORD constexpr OPEN_EXISTING = boost::winapi::OPEN_EXISTING_;
+DWORD constexpr FILE_FLAG_NO_BUFFERING = boost::winapi::FILE_FLAG_NO_BUFFERING_;
+DWORD constexpr FILE_BEGIN = boost::winapi::FILE_BEGIN_;
 const boost::winapi::HANDLE_ INVALID_HANDLE_VALUE = boost::winapi::INVALID_HANDLE_VALUE_;
 
 template <typename Destination, typename Source>
@@ -410,55 +410,6 @@ NtfsFileRecord const* file_record_from_buffer(std::byte* data) {
 
 namespace fsdb {
 
-class DataRun {
- public:
-  DataRun(NtfsNonResidentAttributeHeader const* mft)
-      : DataRun(offset_cast<std::uint8_t>(mft, mft->RunArrayOffset), 0) {
-  }
-
-  std::uint64_t size() const {
-    return length_;
-  }
-
-  std::uint64_t logical_cluster() const {
-    return offset_;
-  }
-
-  DataRun next() const {
-    return DataRun(run_, offset_);
-  }
-
- private:
-  DataRun(std::uint8_t const* run, std::uint64_t offset)
-      : run_(run) {
-    std::uint8_t length_length = (*run_) & 0xf;
-    std::uint8_t offset_length = ((*run_) >> 4) & 0xf;
-    ++run_;
-
-    for(int i = 0; i < length_length; ++i) {
-      length_ |= std::uint64_t(*run_) << (8 * i);
-      ++run_;
-    }
-
-    // Write one byte to extract the sign.
-    offset_ = std::int8_t(run_[offset_length - 1]);
-    offset_ <<= 8 * (offset_length - 1);
-    // Can or in the remainder of the bites
-    for(int i = 0; i < offset_length - 1; ++i) {
-      offset_ |= std::uint64_t(*run_) << (8 * i);
-      ++run_;
-    }
-    // And one more for the byte we extracted first.
-    ++run_;
-
-    offset_ += offset;
-  }
-
-  std::uint64_t length_ = 0;
-  std::int64_t offset_ = 0;
-  std::uint8_t const* run_ = nullptr;
-};
-
 MftParser::MftParser() = default;
 
 MftParser::~MftParser() {
@@ -493,20 +444,15 @@ void MftParser::close() {
   }
 }
 
+std::uint64_t MftParser::count() const {
+  return mft_record_count_ + 16; // +16 for special files.
+}
+
 std::vector<MftFile> MftParser::read_all() const {
-  files_.reserve(mft_record_count_ + 16); // + 16 for special files.
-  DataRun run(mft_);
-  auto count = mft_->LastVcn + 1;
-
-  for(auto remaining = count; remaining != 0; run = run.next()) {
-    auto read_cluster_count = std::min(run.size(), remaining);
-    if(run.logical_cluster() != 0) {
-      read_data_run(run.logical_cluster(), read_cluster_count);
-    }
-    remaining -= read_cluster_count;
-  }
-
-  std::vector<MftFile> ret = std::move(files_);
+  MftReader reader(*this);
+  std::vector<MftFile> ret;
+  ret.reserve(count());
+  reader.read(ret);
   return ret;
 }
 
@@ -569,9 +515,12 @@ void MftParser::load_mft() {
   mft_size_ = mft_->DataSize;
   BOOST_ASSERT(mft_size_ % bytes_per_file_record_ == 0);
   mft_record_count_ = mft_size_ / bytes_per_file_record_;
+  BOOST_ASSERT(bytes_per_cluster_ % bytes_per_file_record_ == 0);
+  records_per_cluster_ = bytes_per_cluster_ / bytes_per_file_record_;
 }
 
-void MftParser::read_data_run(std::uint64_t cluster, std::uint64_t count) const {
+void MftParser::read_data_run(
+    std::uint64_t cluster, std::uint64_t count, std::vector<MftFile>& dest) const {
   boost::winapi::LARGE_INTEGER_ offset;
   offset.QuadPart = cluster * bytes_per_cluster_;
   boost::winapi::SetFilePointerEx(volume_, offset, nullptr, FILE_BEGIN);
@@ -591,7 +540,7 @@ void MftParser::read_data_run(std::uint64_t cluster, std::uint64_t count) const 
           std::runtime_error("Failed to read correct number of bytes."));
     }
 
-    process_mft_read_buffer(buffer);
+    process_mft_read_buffer(buffer, dest);
   }
 
   auto remaining_clusters = static_cast<DWORD>(count % clusters_per_read);
@@ -605,10 +554,11 @@ void MftParser::read_data_run(std::uint64_t cluster, std::uint64_t count) const 
         std::runtime_error("Failed to read correct number of bytes."));
   }
 
-  process_mft_read_buffer(buffer);
+  process_mft_read_buffer(buffer, dest);
 }
 
-void MftParser::process_mft_read_buffer(std::vector<std::byte>& buffer) const {
+void MftParser::process_mft_read_buffer(
+    std::vector<std::byte>& buffer, std::vector<MftFile>& dest) const {
   for(auto i = buffer.begin(), e = buffer.end(); i != e;
       i += bytes_per_file_record_) {
     NtfsFileRecord const* record = file_record_from_buffer(&*i);
@@ -616,8 +566,8 @@ void MftParser::process_mft_read_buffer(std::vector<std::byte>& buffer) const {
       continue;
     }
 
-    files_.emplace_back();
-    MftFile& f = files_.back();
+    dest.emplace_back();
+    MftFile& f = dest.back();
 
     AttributeList attributes(record);
     for(AttributeList attributes(record); attributes.current(); attributes.next()) {
@@ -653,10 +603,74 @@ void MftParser::process_mft_read_buffer(std::vector<std::byte>& buffer) const {
     }
 
     if(f.name.empty()) {
-      files_.pop_back();
+      dest.pop_back();
     }
   }
 }
 
+MftReader::MftReader(MftParser const& parser)
+    : parser_(&parser)
+    , run_(parser.mft_)
+    , remaining_(parser.mft_->LastVcn + 1) {
+}
+
+bool MftReader::read(std::vector<MftFile>& dest) {
+  for(; remaining_ != 0; run_ = run_.next()) {
+    auto cluster_space_remaining = dest.capacity() / parser_->records_per_cluster_;
+    auto read_cluster_count = std::min(run_.size(), remaining_);
+    read_cluster_count = std::min(read_cluster_count, cluster_space_remaining);
+    if(read_cluster_count == 0) {
+      return false;
+    }
+
+    if(run_.logical_cluster() != 0) {
+      parser_->read_data_run(run_.logical_cluster(), read_cluster_count, dest);
+    }
+    remaining_ -= read_cluster_count;
+  }
+
+  return true;
+}
+
+MftReader::DataRun::DataRun(NtfsNonResidentAttributeHeader const* mft)
+    : DataRun(offset_cast<std::uint8_t>(mft, mft->RunArrayOffset), 0) {
+}
+
+std::uint64_t MftReader::DataRun::size() const {
+  return length_;
+}
+
+std::uint64_t MftReader::DataRun::logical_cluster() const {
+  return offset_;
+}
+
+MftReader::DataRun MftReader::DataRun::next() const {
+  return DataRun(run_, offset_);
+}
+
+MftReader::DataRun::DataRun(std::uint8_t const* run, std::uint64_t offset)
+    : run_(run) {
+  std::uint8_t length_length = (*run_) & 0xf;
+  std::uint8_t offset_length = ((*run_) >> 4) & 0xf;
+  ++run_;
+
+  for(int i = 0; i < length_length; ++i) {
+    length_ |= std::uint64_t(*run_) << (8 * i);
+    ++run_;
+  }
+
+  // Write one byte to extract the sign.
+  offset_ = std::int8_t(run_[offset_length - 1]);
+  offset_ <<= 8 * (offset_length - 1);
+  // Can or in the remainder of the bites
+  for(int i = 0; i < offset_length - 1; ++i) {
+    offset_ |= std::uint64_t(*run_) << (8 * i);
+    ++run_;
+  }
+  // And one more for the byte we extracted first.
+  ++run_;
+
+  offset_ += offset;
+}
 
 } // namespace fsdb
