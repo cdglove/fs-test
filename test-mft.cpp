@@ -21,7 +21,18 @@ int main() {
   boost::timer::auto_cpu_timer t;
   fsdb::MftParser parser;
   parser.open(L"\\\\?\\c:");
-  auto files = parser.read_all();
+  int count = 1;
+  fsdb::MftReader reader(parser);
+  std::vector<fsdb::MftFile> files;
+  std::vector<fsdb::MftFile> temp_files;
+  temp_files.reserve(10 * 1024);
+  while(reader.read(temp_files) == fsdb::OpStatus::NotFinished) {
+    ++count;
+    std::copy(temp_files.begin(), temp_files.end(), std::back_inserter(files));
+    temp_files.clear();
+  }
+
+  //auto files = parser.read_all();
   parser.close();
 
   auto total_count = files.size();
@@ -36,7 +47,8 @@ int main() {
       });
 
   std::cout << "test-mft found " << total_count << " files totalling "
-            << total_size / 1024 << " KiB." << std::endl;
+            << total_size / 1024 << " KiB."
+            << " in " << count << " reads." << std::endl;
 
   std::partial_sort(
       files.begin(), files.begin() + 24, files.begin() + files.size(),
