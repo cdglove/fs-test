@@ -137,8 +137,11 @@ struct BootBlock {
 };
 #pragma pack(pop)
 
-// All ntfs information taken from
+// All ntfs spec information taken from
 // https://flatcap.org/linux-ntfs/ntfs/
+
+// Additional functional information taken from
+// http://www.kcall.co.uk/ntfs/index.html
 
 // https://flatcap.org/linux-ntfs/ntfs/concepts/file_record.html
 struct NtfsFileRecord {
@@ -309,9 +312,9 @@ T const* attribute_cast(NtfsResidentAttributeHeader const* attr) {
 
 class AttributeList {
  public:
-  AttributeList(NtfsFileRecord const* file)
-      : record_(file)
-      , current_(offset_cast<NtfsAttributeHeader>(file, file->AttributesOffset)) {
+  AttributeList(NtfsFileRecord const& file)
+      : record_(&file)
+      , current_(offset_cast<NtfsAttributeHeader>(&file, file.AttributesOffset)) {
   }
 
   NtfsAttributeHeader const* next() {
@@ -459,8 +462,10 @@ std::vector<MftFile> MftParser::read_all() const {
 void MftParser::load_boot_sector() {
   BootBlock boot_sector;
   DWORD read_size = 0;
-  boost::winapi::ReadFile(
-      volume_, &boot_sector, sizeof(boot_sector), &read_size, nullptr);
+  if(!boost::winapi::ReadFile(
+         volume_, &boot_sector, sizeof(boot_sector), &read_size, nullptr)) {
+  }
+
   if(read_size != sizeof(boot_sector)) {
     BOOST_THROW_EXCEPTION(std::runtime_error("Failed to read boot sector."));
   }
@@ -530,13 +535,15 @@ void MftParser::read_data_run(
   auto bytes_per_read = clusters_per_read * bytes_per_cluster_;
   std::vector<std::byte> buffer(bytes_per_read);
 
-  DWORD bytes_read = 0;
   for(int i = 0; i < read_count; ++i) {
-    boost::winapi::ReadFile(
-        volume_, buffer.data(), bytes_per_read, &bytes_read, nullptr);
+    DWORD bytes_read = 0;
+    if(!boost::winapi::ReadFile(
+           volume_, buffer.data(), bytes_per_read, &bytes_read, nullptr)) {
+      BOOST_THROW_EXCEPTION(std::runtime_error("Failed to read MFT"));
+    }
 
     if(bytes_read != buffer.size()) {
-      boost::throw_exception(
+      BOOST_THROW_EXCEPTION(
           std::runtime_error("Failed to read correct number of bytes."));
     }
 
@@ -544,17 +551,55 @@ void MftParser::read_data_run(
   }
 
   auto remaining_clusters = static_cast<DWORD>(count % clusters_per_read);
-  buffer.resize(remaining_clusters * bytes_per_cluster_);
-  boost::winapi::ReadFile(
-      volume_, buffer.data(), remaining_clusters * bytes_per_cluster_,
-      &bytes_read, nullptr);
+  if(remaining_clusters != 0) {
+    DWORD bytes_read = 0;
+    if(!boost::winapi::ReadFile(
+           volume_, buffer.data(), bytes_per_read, &bytes_read, nullptr)) {
+      BOOST_THROW_EXCEPTION(std::runtime_error("Failed to read MFT"));
+    }
 
-  if(bytes_read != buffer.size()) {
-    boost::throw_exception(
-        std::runtime_error("Failed to read correct number of bytes."));
+    if(bytes_read != buffer.size()) {
+      BOOST_THROW_EXCEPTION(
+          std::runtime_error("Failed to read correct number of bytes."));
+    }
+
+    buffer.resize(remaining_clusters * bytes_per_cluster_);
+    process_mft_read_buffer(buffer, dest);
   }
+}
 
-  process_mft_read_buffer(buffer, dest);
+MftFile file_record_to_mft_file(NtfsFileRecord const& record) {
+  MftFile f;
+  for(AttributeList attributes(record); attributes.current(); attributes.next()) {
+    auto attrib = attributes.current();
+    switch(attrib->Type) {
+      case NtfsAttributeType::FileName: {
+        auto na = attribute_cast<NtfsFilenameAttribute>(to_resident(attrib));
+        if(!na) {
+          continue;
+        }
+
+        f.id = record.RecordId;
+        f.parent = na->DirectoryRecordId & 0x0000ffffffffffff;
+        f.name = boost::nowide::narrow(na->Name, na->NameLength);
+        f.size = na->DataSize;
+        f.modified = to_time_t(na->LastWriteTime);
+        f.created = to_time_t(na->CreationTime);
+        f.accessed = to_time_t(na->LastAccessTime);
+        f.directory = record.Flags & NtfsFileRecord::Flag::Directory;
+
+      } break;
+      case NtfsAttributeType::Data: {
+        if(auto data_attribute = to_nonresident(attrib)) {
+          f.size = data_attribute->DataSize;
+        }
+      } break;
+      // Silence warning
+      default:
+        break;
+    }
+  }
+  return f;
 }
 
 void MftParser::process_mft_read_buffer(
@@ -568,40 +613,7 @@ void MftParser::process_mft_read_buffer(
 
     dest.emplace_back();
     MftFile& f = dest.back();
-
-    AttributeList attributes(record);
-    for(AttributeList attributes(record); attributes.current(); attributes.next()) {
-      auto current = attributes.current();
-      switch(current->Type) {
-        case NtfsAttributeType::FileName: {
-          auto name_attribute = attribute_cast<NtfsFilenameAttribute>(
-              to_resident(current));
-          if(!name_attribute) {
-            continue;
-          }
-
-          f.id = record->RecordId;
-          f.parent = name_attribute->DirectoryRecordId & 0x0000ffffffffffff;
-          f.name = boost::nowide::narrow(
-              name_attribute->Name, name_attribute->NameLength);
-          f.size = name_attribute->DataSize;
-          f.modified = to_time_t(name_attribute->LastWriteTime);
-          f.created = to_time_t(name_attribute->CreationTime);
-          f.accessed = to_time_t(name_attribute->LastAccessTime);
-          f.directory = record->Flags & NtfsFileRecord::Flag::Directory;
-
-        } break;
-        case NtfsAttributeType::Data: {
-          if(auto data_attribute = to_nonresident(current)) {
-            f.size = data_attribute->DataSize;
-          }
-        } break;
-        // Silence warning
-        default:
-          break;
-      }
-    }
-
+    f = file_record_to_mft_file(*record);
     if(f.name.empty()) {
       dest.pop_back();
     }
@@ -609,27 +621,43 @@ void MftParser::process_mft_read_buffer(
 }
 
 MftReader::MftReader(MftParser const& parser)
-    : parser_(&parser)
-    , run_(parser.mft_)
-    , remaining_(parser.mft_->LastVcn + 1) {
+    : run_(parser.mft_)
+    , run_reader_(parser)
+    , clusters_remaining_(parser.mft_->LastVcn + 1) {
+  run_reader_.begin(run_);
 }
 
-bool MftReader::read(std::vector<MftFile>& dest) {
-  for(; remaining_ != 0; run_ = run_.next()) {
-    auto cluster_space_remaining = dest.capacity() / parser_->records_per_cluster_;
-    auto read_cluster_count = std::min(run_.size(), remaining_);
-    read_cluster_count = std::min(read_cluster_count, cluster_space_remaining);
-    if(read_cluster_count == 0) {
-      return false;
+OpStatus MftReader::read(std::vector<MftFile>& dest) {
+  while(true) {
+    if(clusters_remaining_ == 0) {
+      return OpStatus::Finished;
     }
 
-    if(run_.logical_cluster() != 0) {
-      parser_->read_data_run(run_.logical_cluster(), read_cluster_count, dest);
+    if(run_.size() == 0 || run_.logical_cluster() == 0) {
+      run_ = run_.next();
+      run_reader_.begin(run_);
+      continue;
     }
-    remaining_ -= read_cluster_count;
+
+    while(auto record = run_reader_.next_record()) {
+      dest.emplace_back();
+      MftFile& f = dest.back();
+      f = file_record_to_mft_file(*record);
+      if(f.name.empty()) {
+        dest.pop_back();
+      }
+
+      if(dest.size() == dest.capacity()) {
+        return OpStatus::NotFinished;
+      }
+    }
+
+    clusters_remaining_ -= run_.size();
+    if(clusters_remaining_) {
+      run_ = run_.next();
+      run_reader_.begin(run_);
+    }
   }
-
-  return true;
 }
 
 MftReader::DataRun::DataRun(NtfsNonResidentAttributeHeader const* mft)
@@ -671,6 +699,65 @@ MftReader::DataRun::DataRun(std::uint8_t const* run, std::uint64_t offset)
   ++run_;
 
   offset_ += offset;
+}
+
+MftReader::DataRunReader::DataRunReader(MftParser const& parser)
+    : parser_(&parser) {
+}
+
+void MftReader::DataRunReader::begin(DataRun const& run) {
+  boost::winapi::LARGE_INTEGER_ offset;
+  offset.QuadPart = run.logical_cluster() * parser_->bytes_per_cluster_;
+  boost::winapi::SetFilePointerEx(parser_->volume_, offset, nullptr, FILE_BEGIN);
+
+  std::uint32_t clusters_per_read = 1024;
+  bytes_per_read_ = clusters_per_read * parser_->bytes_per_cluster_;
+  bytes_per_file_record_ = parser_->bytes_per_file_record_;
+  run_bytes_remaining_ = run.size() * parser_->bytes_per_cluster_;
+  next_buffer();
+}
+
+NtfsFileRecord const* MftReader::DataRunReader::next_record() {
+  auto e = buffer_.end();
+  while(true) {
+    if(cursor_ == e) {
+      if(run_bytes_remaining_) {
+        next_buffer();
+        e = buffer_.end();
+      }
+      else {
+        return nullptr;
+      }
+    }
+
+    while(cursor_ != e) {
+      NtfsFileRecord const* record = file_record_from_buffer(&*cursor_);
+      cursor_ += bytes_per_file_record_;
+      if(!(record->Flags & NtfsFileRecord::Flag::InUse)) {
+        continue;
+      }
+      return record;
+    }
+  }
+}
+
+void MftReader::DataRunReader::next_buffer() {
+  auto read_size = std::min<std::uint64_t>(bytes_per_read_, run_bytes_remaining_);
+  buffer_.resize(read_size);
+  DWORD bytes_read = 0;
+  if(!boost::winapi::ReadFile(
+         parser_->volume_, buffer_.data(), (DWORD)buffer_.size(), &bytes_read,
+         nullptr)) {
+    BOOST_THROW_EXCEPTION(std::runtime_error("Failed to read MFT"));
+  }
+
+  if(bytes_read != buffer_.size()) {
+    BOOST_THROW_EXCEPTION(
+        std::runtime_error("Failed to read correct number of bytes."));
+  }
+
+  cursor_ = buffer_.begin();
+  run_bytes_remaining_ -= read_size;
 }
 
 } // namespace fsdb

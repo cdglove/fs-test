@@ -45,6 +45,7 @@ class MftParser {
 
  private:
   friend class MftReader;
+  friend class DataRunReader;
   void load_boot_sector();
   void load_mft();
   void read_data_run(
@@ -64,10 +65,15 @@ class MftParser {
   std::uint64_t mft_record_count_ = 0;
 };
 
+enum class OpStatus {
+  NotFinished,
+  Finished,
+};
+
 class MftReader {
  public:
   MftReader(MftParser const& parser);
-  bool read(std::vector<MftFile>& dest);
+  OpStatus read(std::vector<MftFile>& dest);
 
  private:
   class DataRun {
@@ -84,9 +90,26 @@ class MftReader {
     std::uint8_t const* run_ = nullptr;
   };
 
-  MftParser const* parser_;
+  class DataRunReader {
+   public:
+    DataRunReader(
+        MftParser const& parser);
+    void begin(DataRun const& run);
+    struct NtfsFileRecord const* next_record();
+
+   private:
+    void next_buffer();
+    MftParser const* parser_ = nullptr;
+    std::vector<std::byte> buffer_;
+    std::vector<std::byte>::iterator cursor_;
+    std::uint32_t bytes_per_read_ = 0;
+    std::uint64_t run_bytes_remaining_ = 0;
+    std::uint64_t bytes_per_file_record_ = 0;
+  };
+
   DataRun run_;
-  std::uint64_t remaining_;
+  DataRunReader run_reader_;
+  std::uint64_t clusters_remaining_ = 0;
 };
 
 } // namespace fsdb
